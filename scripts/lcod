@@ -100,6 +100,16 @@ maybe_auto_update_cli() {
   if mv "${tmp}" "${script_path}" 2>/dev/null; then
     cached_version="${remote_version}"
     log_info "CLI auto-updated to ${cached_version}."
+    local lib_tmp
+    lib_tmp=$(mktemp)
+    local lib_url="${LCOD_CLI_LIB_URL:-https://raw.githubusercontent.com/lcod-team/lcod-cli/main/scripts/lib/common.sh}"
+    if download_file "${lib_url}" "${lib_tmp}"; then
+      mkdir -p "${SCRIPT_DIR}/lib"
+      mv "${lib_tmp}" "${SCRIPT_DIR}/lib/common.sh"
+    else
+      rm -f "${lib_tmp}"
+      log_warn "Failed to refresh CLI support library."
+    fi
   else
     rm -f "${tmp}"
     log_warn "CLI auto-update failed (unable to write to ${script_path})."

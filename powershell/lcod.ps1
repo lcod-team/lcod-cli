@@ -260,6 +260,18 @@ function Invoke-CliAutoUpdate {
         Copy-Item -LiteralPath $tmp -Destination $scriptPath -Force
         if ($remoteVersion) { $cachedVersion = $remoteVersion }
         Write-Info ("CLI auto-updated to {0}." -f $cachedVersion)
+        try {
+            $libTmp = [System.IO.Path]::GetTempFileName()
+            $libUrl = if ($env:LCOD_CLI_LIB_URL) { $env:LCOD_CLI_LIB_URL } else { "https://raw.githubusercontent.com/lcod-team/lcod-cli/main/scripts/lib/common.sh" }
+            Invoke-WebRequest -Uri $libUrl -OutFile $libTmp -UseBasicParsing
+            $libDir = Join-Path (Split-Path $scriptPath -Parent) "lib"
+            New-Item -ItemType Directory -Path $libDir -Force | Out-Null
+            Copy-Item -LiteralPath $libTmp -Destination (Join-Path $libDir "common.sh") -Force
+            Remove-Item -Force $libTmp
+        }
+        catch {
+            Write-Warn "Failed to refresh CLI support library."
+        }
     }
     catch {
         Write-Warn "CLI auto-update failed (insufficient permissions?)."

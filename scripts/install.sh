@@ -27,6 +27,7 @@ err() {
 fetch_asset() {
   local relative="$1"
   local destination="$2"
+  mkdir -p "$(dirname "${destination}")"
   if [[ -n "${SOURCE_DIR}" && -f "${SOURCE_DIR}/${relative}" ]]; then
     cp "${SOURCE_DIR}/${relative}" "${destination}"
   else
@@ -94,6 +95,7 @@ BAT
 main() {
   fetch_asset "scripts/${SCRIPT_NAME}" "${TMP_DIR}/${SCRIPT_NAME}"
   chmod +x "${TMP_DIR}/${SCRIPT_NAME}"
+  fetch_asset "scripts/lib/common.sh" "${TMP_DIR}/lib/common.sh"
 
   local cli_version=""
   if [[ -n "${SOURCE_DIR}" && -f "${SOURCE_DIR}/VERSION" ]]; then
@@ -113,6 +115,8 @@ main() {
     [[ -z "${dir}" ]] && continue
     if installed_path=$(install_script "${dir}"); then
       info "Installed ${SCRIPT_NAME} to ${installed_path}"
+      mkdir -p "${dir}/lib"
+      cp "${TMP_DIR}/lib/common.sh" "${dir}/lib/common.sh"
       if [[ "${INSTALL_POWERSHELL}" == "1" ]]; then
         install_powershell "${dir}" 2>/dev/null || true
       fi
