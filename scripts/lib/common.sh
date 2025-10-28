@@ -59,6 +59,87 @@ fetch_latest_version() {
   curl -fsSL "${version_url}" 2>/dev/null
 }
 
+detect_platform() {
+  local os arch
+  os=$(uname -s | tr '[:upper:]' '[:lower:]')
+  arch=$(uname -m)
+
+  case "${os}" in
+    linux)
+      case "${arch}" in
+        x86_64|amd64) echo "linux-x86_64" ;;
+        aarch64|arm64) echo "linux-arm64" ;;
+        *) log_error "Unsupported Linux architecture: ${arch}"; return 1 ;;
+      esac
+      ;;
+    darwin)
+      case "${arch}" in
+        x86_64|amd64) echo "macos-x86_64" ;;
+        arm64) echo "macos-arm64" ;;
+        *) log_error "Unsupported macOS architecture: ${arch}"; return 1 ;;
+      esac
+      ;;
+    msys*|mingw*|cygwin*)
+      case "${arch}" in
+        x86_64|amd64) echo "windows-x86_64" ;;
+        arm64) echo "windows-arm64" ;;
+        *) log_error "Unsupported Windows architecture: ${arch}"; return 1 ;;
+      esac
+      ;;
+    *)
+      log_error "Unsupported operating system: ${os}"
+      return 1
+      ;;
+  esac
+}
+
+make_release_asset_url() {
+  local repo="${1:?repo required}"
+  local version="${2:?version required}"
+  local platform="${3:?platform required}"
+  local extension
+  extension=$(release_asset_extension "${platform}") || return 1
+  local base="https://github.com/${repo}/releases/download"
+  printf "%s/lcod-run-v%s/lcod-run-%s.%s" "${base}" "${version}" "${platform}" "${extension}"
+}
+
+release_asset_extension() {
+  local platform="${1:?platform required}"
+  case "${platform}" in
+    windows-*) echo "zip" ;;
+    *) echo "tar.gz" ;;
+  esac
+}
+
+download_file() {
+  require_command curl "Install curl to download LCOD assets."
+  local url="${1:?url required}"
+  local output="${2:?output path required}"
+  curl -fL --progress-bar "${url}" -o "${output}"
+}
+
+extract_archive() {
+  local archive="${1:?archive required}"
+  local destination="${2:?destination required}"
+  local extension
+  extension="${archive##*.}"
+  mkdir -p "${destination}"
+  case "${extension}" in
+    zip)
+      require_command unzip "Install unzip to extract Windows archives."
+      unzip -o "${archive}" -d "${destination}" >/dev/null
+      ;;
+    gz)
+      require_command tar "Install tar to extract LCOD archives."
+      tar -xzf "${archive}" -C "${destination}"
+      ;;
+    *)
+      log_error "Unsupported archive format: ${archive}"
+      return 1
+      ;;
+  esac
+}
+
 update_version_cache() {
   ensure_environment
   local release_repo="${1:-lcod-dev/lcod-release}"

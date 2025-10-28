@@ -45,12 +45,19 @@ The CLI is intentionally thin. Most responsibilities live in `lcod-release` (ver
    pwsh -File powershell/lcod.ps1 --help
    ```
 
-4. Install a local kernel binary (temporary workflow until releases are wired):
+4. Install a kernel runtime either from a local path or directly from the latest release:
 
    ```
-   ./scripts/lcod kernel install my-kernel --path /path/to/lcod-run --version 0.1.12
+   # download the appropriate lcod-run archive (auto-detects platform, fetches latest by default)
+   ./scripts/lcod kernel install rust --from-release --version 0.1.13
+
+   # or copy an existing binary that you built locally
+   ./scripts/lcod kernel install dev --path /path/to/lcod-run --version 0.1.13
+
    ./scripts/lcod kernel ls
    ```
+
+   Set `LCOD_RELEASE_REPO=owner/repo` to point the downloader at a different release source if needed (defaults to `lcod-team/lcod-kernel-rs`).
 
 ## Roadmap
 

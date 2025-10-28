@@ -20,7 +20,7 @@ Usage: lcod <command> [options]
 Commands:
   version               Print the currently installed CLI version.
   kernel ls             List available kernels from the local manifest.
-  kernel install <id>   Install or update a kernel from a local path.
+  kernel install <id>   Install or update a kernel (local path or release asset).
   kernel remove <id>    Remove a kernel from the manifest.
   kernel default <id>   Set the default kernel.
   cache clean           Remove cached artefacts.
@@ -118,13 +118,18 @@ cmd_kernel_install() {
   shift || true
 
   if [[ -z "${kernel_id}" ]]; then
-    log_error "Usage: lcod kernel install <kernel-id> --path <binary> [--version <version>] [--force]"
+    log_error "Usage: lcod kernel install <kernel-id> [--path <binary> | --from-release] [--version <version>] [--platform <id>] [--repo <owner/repo>] [--force]"
     exit 1
   fi
 
   local source_path=""
   local version=""
   local force="false"
+  local from_release="false"
+  local release_platform=""
+  local release_repo="${LCOD_RELEASE_REPO:-lcod-team/lcod-kernel-rs}"
+  local cleanup_dir=""
+  local asset_path=""
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -132,8 +137,20 @@ cmd_kernel_install() {
         source_path="${2:-}"
         shift 2 || true
         ;;
+      --from-release)
+        from_release="true"
+        shift
+        ;;
       --version)
         version="${2:-}"
+        shift 2 || true
+        ;;
+      --platform)
+        release_platform="${2:-}"
+        shift 2 || true
+        ;;
+      --repo)
+        release_repo="${2:-}"
         shift 2 || true
         ;;
       --force)
@@ -141,7 +158,7 @@ cmd_kernel_install() {
         shift
         ;;
       -h|--help)
-        log_info "Usage: lcod kernel install <kernel-id> --path <binary> [--version <version>] [--force]"
+        log_info "Usage: lcod kernel install <kernel-id> [--path <binary> | --from-release] [--version <version>] [--platform <id>] [--repo <owner/repo>] [--force]"
         return 0
         ;;
       *)
@@ -151,13 +168,73 @@ cmd_kernel_install() {
     esac
   done
 
+  if [[ "${from_release}" == "true" ]]; then
+    if [[ -z "${version}" ]]; then
+      version=$(get_cached_remote_version)
+      if [[ -z "${version}" ]]; then
+        if ! version=$(update_version_cache); then
+          log_error "Unable to determine release version; pass --version explicitly."
+          exit 1
+        fi
+      fi
+    fi
+
+    if [[ -z "${release_platform}" || "${release_platform}" == "auto" ]]; then
+      if ! release_platform=$(detect_platform); then
+        log_error "Failed to auto-detect platform; use --platform explicitly."
+        exit 1
+      fi
+    fi
+
+    local extension
+    if ! extension=$(release_asset_extension "${release_platform}"); then
+      exit 1
+    fi
+
+    local cache_dir="${LCOD_CACHE_DIR}/releases/${version}"
+    mkdir -p "${cache_dir}"
+    local asset_name="lcod-run-${version}-${release_platform}.${extension}"
+    asset_path="${cache_dir}/${asset_name}"
+    local asset_url
+    if ! asset_url=$(make_release_asset_url "${release_repo}" "${version}" "${release_platform}"); then
+      log_error "Unsupported platform for release asset"
+      exit 1
+    fi
+
+    if [[ "${force}" == "true" || ! -f "${asset_path}" ]]; then
+      log_info "Downloading ${asset_url}"
+      if ! download_file "${asset_url}" "${asset_path}"; then
+        log_error "Failed to download ${asset_url}"
+        exit 1
+      fi
+    else
+      log_info "Using cached release asset ${asset_path}"
+    fi
+
+    cleanup_dir=$(mktemp -d)
+    if ! extract_archive "${asset_path}" "${cleanup_dir}"; then
+      rm -rf "${cleanup_dir}"
+      exit 1
+    fi
+
+    local candidate
+    candidate=$(find "${cleanup_dir}" -maxdepth 2 -type f \( -name 'lcod-run' -o -name 'lcod-run.exe' \) | head -n1 || true)
+    if [[ -z "${candidate}" ]]; then
+      rm -rf "${cleanup_dir}"
+      log_error "Unable to locate lcod-run binary inside archive ${asset_name}"
+      exit 1
+    fi
+    source_path="${candidate}"
+  fi
+
   if [[ -z "${source_path}" ]]; then
-    log_error "--path is required for kernel install"
+    log_error "Provide --path <binary> or --from-release"
     exit 1
   fi
 
   if [[ ! -f "${source_path}" ]]; then
     log_error "Source binary not found at ${source_path}"
+    [[ -n "${cleanup_dir}" ]] && rm -rf "${cleanup_dir}"
     exit 1
   fi
 
@@ -179,6 +256,13 @@ cmd_kernel_install() {
   log_info "Kernel '${kernel_id}' installed at ${destination}"
   if [[ -n "${version}" ]]; then
     log_info "Recorded version ${version}"
+  fi
+  if [[ "${from_release}" == "true" ]]; then
+    log_info "Source: ${asset_path}"
+  fi
+
+  if [[ -n "${cleanup_dir}" ]]; then
+    rm -rf "${cleanup_dir}"
   fi
 }
 

@@ -21,6 +21,7 @@ $VersionCache = Join-Path $StateDir "latest-version.json"
 
 $IsWindows = [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Windows)
 $IsMacOS = [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::OSX)
+$IsLinux = [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Linux)
 
 function Write-Info($Message) {
     Write-Host "[INFO] $Message"
@@ -129,6 +130,63 @@ function Get-KernelPath([object]$Config, [string]$KernelId) {
         }
     }
     return $null
+}
+
+function Get-DetectedPlatform {
+    $arch = [System.Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture
+    if ($IsLinux) {
+        switch ($arch) {
+            "X64" { return "linux-x86_64" }
+            "Arm64" { return "linux-arm64" }
+            default { throw "Unsupported Linux architecture: $arch" }
+        }
+    }
+    elseif ($IsMacOS) {
+        switch ($arch) {
+            "X64" { return "macos-x86_64" }
+            "Arm64" { return "macos-arm64" }
+            default { throw "Unsupported macOS architecture: $arch" }
+        }
+    }
+    elseif ($IsWindows) {
+        switch ($arch) {
+            "X64" { return "windows-x86_64" }
+            "Arm64" { return "windows-arm64" }
+            default { throw "Unsupported Windows architecture: $arch" }
+        }
+    }
+    else {
+        throw "Unsupported OS platform."
+    }
+}
+
+function Get-AssetExtension([string]$Platform) {
+    if ($Platform -like "windows-*") { return "zip" }
+    return "tar.gz"
+}
+
+function Get-ReleaseAssetUrl([string]$Repo, [string]$Version, [string]$Platform) {
+    $ext = Get-AssetExtension $Platform
+    return "https://github.com/$Repo/releases/download/lcod-run-v$Version/lcod-run-$Platform.$ext"
+}
+
+function Download-File([string]$Url, [string]$Destination) {
+    Invoke-WebRequest -Uri $Url -OutFile $Destination -UseBasicParsing
+}
+
+function Extract-Archive([string]$Archive, [string]$Destination) {
+    if ($Archive.ToLower().EndsWith(".zip")) {
+        Expand-Archive -Path $Archive -DestinationPath $Destination -Force
+    }
+    elseif ($Archive.ToLower().EndsWith(".tar.gz")) {
+        if (-not (Get-Command tar -ErrorAction SilentlyContinue)) {
+            throw "tar command is required to extract $Archive"
+        }
+        tar -xzf $Archive -C $Destination | Out-Null
+    }
+    else {
+        throw "Unsupported archive format: $Archive"
+    }
 }
 
 function Touch-UpdateStamp {
@@ -280,7 +338,7 @@ Usage: lcod <command> [options]
 Commands:
   version               Print the currently installed CLI version.
   kernel ls             List available kernels from the local manifest.
-  kernel install <id>   Install or update a kernel from a local path.
+  kernel install <id>   Install or update a kernel (local path or release asset).
   kernel remove <id>    Remove a kernel from the manifest.
   kernel default <id>   Set the default kernel.
   cache clean           Clear cached artefacts.
@@ -293,7 +351,7 @@ Most commands are still placeholders until installation logic lands.
 
 function Kernel-Install([string[]]$Args) {
     if ($Args.Length -lt 2) {
-        Write-ErrorMessage "Usage: lcod kernel install <kernel-id> --path <binary> [--version <version>] [--force]"
+        Write-ErrorMessage "Usage: lcod kernel install <kernel-id> [--path <binary> | --from-release] [--version <version>] [--platform <id>] [--repo <owner/repo>] [--force]"
         exit 1
     }
 
@@ -301,6 +359,11 @@ function Kernel-Install([string[]]$Args) {
     $sourcePath = $null
     $kernelVersion = $null
     $force = $false
+    $fromRelease = $false
+    $platformId = $null
+    $releaseRepo = if ($env:LCOD_RELEASE_REPO) { $env:LCOD_RELEASE_REPO } else { "lcod-team/lcod-kernel-rs" }
+    $tempDir = $null
+    $assetPath = $null
 
     for ($i = 2; $i -lt $Args.Length; $i++) {
         switch ($Args[$i]) {
@@ -312,6 +375,7 @@ function Kernel-Install([string[]]$Args) {
                 $sourcePath = $Args[$i + 1]
                 $i++
             }
+            "--from-release" { $fromRelease = $true }
             "--version" {
                 if ($i + 1 -ge $Args.Length) {
                     Write-ErrorMessage "--version requires a value."
@@ -320,11 +384,25 @@ function Kernel-Install([string[]]$Args) {
                 $kernelVersion = $Args[$i + 1]
                 $i++
             }
-            "--force" {
-                $force = $true
+            "--platform" {
+                if ($i + 1 -ge $Args.Length) {
+                    Write-ErrorMessage "--platform requires a value."
+                    exit 1
+                }
+                $platformId = $Args[$i + 1]
+                $i++
             }
-            "-h" { Write-Info "Usage: lcod kernel install <kernel-id> --path <binary> [--version <version>] [--force]"; return }
-            "--help" { Write-Info "Usage: lcod kernel install <kernel-id> --path <binary> [--version <version>] [--force]"; return }
+            "--repo" {
+                if ($i + 1 -ge $Args.Length) {
+                    Write-ErrorMessage "--repo requires a value."
+                    exit 1
+                }
+                $releaseRepo = $Args[$i + 1]
+                $i++
+            }
+            "--force" { $force = $true }
+            "-h" { Write-Info "Usage: lcod kernel install <kernel-id> [--path <binary> | --from-release] [--version <version>] [--platform <id>] [--repo <owner/repo>] [--force]"; return }
+            "--help" { Write-Info "Usage: lcod kernel install <kernel-id> [--path <binary> | --from-release] [--version <version>] [--platform <id>] [--repo <owner/repo>] [--force]"; return }
             default {
                 Write-ErrorMessage ("Unknown option '{0}' for kernel install." -f $Args[$i])
                 exit 1
@@ -332,12 +410,76 @@ function Kernel-Install([string[]]$Args) {
         }
     }
 
+    if ($fromRelease) {
+        if (-not $kernelVersion) {
+            $kernelVersion = Get-CachedRemoteVersion
+            if (-not $kernelVersion) {
+                $kernelVersion = Update-VersionCache
+            }
+            if (-not $kernelVersion) {
+                Write-ErrorMessage "Unable to determine release version; pass --version."
+                exit 1
+            }
+        }
+
+        if (-not $platformId -or $platformId -eq "auto") {
+            try {
+                $platformId = Get-DetectedPlatform
+            }
+            catch {
+                Write-ErrorMessage $_.Exception.Message
+                exit 1
+            }
+        }
+
+        $extension = Get-AssetExtension $platformId
+        $cacheDir = Join-Path $CacheDir (Join-Path "releases" $kernelVersion)
+        if (-not (Test-Path $cacheDir)) { New-Item -ItemType Directory -Path $cacheDir | Out-Null }
+        $assetName = "lcod-run-$platformId.$extension"
+        $assetPath = Join-Path $cacheDir $assetName
+        $assetUrl = Get-ReleaseAssetUrl $releaseRepo $kernelVersion $platformId
+
+        if ($force -or -not (Test-Path $assetPath)) {
+            Write-Info ("Downloading {0}" -f $assetUrl)
+            try { Download-File $assetUrl $assetPath }
+            catch {
+                Write-ErrorMessage ("Failed to download {0}" -f $assetUrl)
+                exit 1
+            }
+        }
+        else {
+            Write-Info ("Using cached asset {0}" -f $assetPath)
+        }
+
+        $tempDir = Join-Path ([System.IO.Path]::GetTempPath()) ("lcod-cli-" + [System.Guid]::NewGuid().ToString())
+        New-Item -ItemType Directory -Path $tempDir | Out-Null
+
+        try { Extract-Archive $assetPath $tempDir }
+        catch {
+            if ($tempDir) { Remove-Item -Recurse -Force $tempDir }
+            Write-ErrorMessage $_.Exception.Message
+            exit 1
+        }
+
+        $candidate = Get-ChildItem -Path $tempDir -Recurse -File |
+            Where-Object { $_.Name -match '^lcod-run(\.exe)?$' } |
+            Select-Object -First 1
+
+        if (-not $candidate) {
+            if ($tempDir) { Remove-Item -Recurse -Force $tempDir }
+            Write-ErrorMessage "Unable to locate lcod-run binary inside the archive."
+            exit 1
+        }
+        $sourcePath = $candidate.FullName
+    }
+
     if (-not $sourcePath) {
-        Write-ErrorMessage "--path is required for kernel install."
+        Write-ErrorMessage "Provide --path <binary> or --from-release."
         exit 1
     }
 
     if (-not (Test-Path $sourcePath)) {
+        if ($tempDir) { Remove-Item -Recurse -Force $tempDir }
         Write-ErrorMessage ("Source binary not found at {0}" -f $sourcePath)
         exit 1
     }
@@ -346,6 +488,7 @@ function Kernel-Install([string[]]$Args) {
 
     $destination = Join-Path $BinDir $kernelId
     if ((Test-Path $destination) -and -not $force) {
+        if ($tempDir) { Remove-Item -Recurse -Force $tempDir }
         Write-ErrorMessage ("Kernel '{0}' already installed at {1} (use --force to overwrite)." -f $kernelId, $destination)
         exit 1
     }
@@ -366,6 +509,11 @@ function Kernel-Install([string[]]$Args) {
     if ($kernelVersion) {
         Write-Info ("Recorded version {0}" -f $kernelVersion)
     }
+    if ($fromRelease -and $assetPath) {
+        Write-Info ("Source: {0}" -f $assetPath)
+    }
+
+    if ($tempDir) { Remove-Item -Recurse -Force $tempDir }
 }
 
 function Kernel-Remove([string[]]$Args) {

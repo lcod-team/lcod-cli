@@ -6,7 +6,7 @@ This document explains how the CLI initialises its workspace, which prerequisite
 
 | Platform | Requirements |
 |----------|--------------|
-| Bash     | `bash` ≥ 4, `curl`, `jq`, `python3` (optional, used for portable date arithmetic). |
+| Bash     | `bash` ≥ 4, `curl`, `jq`, `tar`, `unzip` (for release extraction), `python3` (optional, date arithmetic fallback). |
 | PowerShell | PowerShell 7+, `Invoke-WebRequest` (built-in). |
 
 On macOS or Linux, install `jq` via the system package manager (`brew install jq`, `apt install jq`, …).
@@ -46,10 +46,14 @@ PowerShell and Bash share the same state directory, so running the command from 
 
 ## Kernel management primitives
 
-- `lcod kernel install <id> --path <binary> [--version <semver>]` copies the provided executable into `~/.lcod/bin/<id>`, clears macOS quarantine attributes, and records the entry in `config.json` (creating a default kernel if none exists). Use `--force` to overwrite.
+- `lcod kernel install <id>` supports two modes:
+  - `--from-release [--version <semver>] [--platform <id>]` downloads the published `lcod-run` archive from GitHub (default repo `lcod-team/lcod-kernel-rs`, auto-detected platform) and installs it under `~/.lcod/bin/<id>`. Passing `--version` is recommended until the orchestrator exposes a runtime manifest.
+  - `--path <binary> [--version <semver>]` copies an existing executable, clears macOS quarantine attributes, and records the entry in `config.json`. Use `--force` to overwrite an existing install.
 - `lcod kernel ls` prints the recorded kernels, their version metadata, and whether they are the default runtime.
 - `lcod kernel default <id>` switches the preferred runtime; the value falls back to `null` if you later remove that kernel.
 - `lcod kernel remove <id>` deletes the managed binary (only if it lives under `~/.lcod/bin/`) and prunes the manifest.
+
+For custom release sources, export `LCOD_RELEASE_REPO=owner/repo` before running the command (it defaults to `lcod-team/lcod-kernel-rs`).
 
 ## macOS quarantine note
 
