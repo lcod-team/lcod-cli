@@ -70,7 +70,7 @@ The CLI checks for updates (itself and the installed kernels) every 24 hours by 
    ./scripts/lcod kernel install rs
 
    # or copy an existing binary that you built locally
-   ./scripts/lcod kernel install dev --path /path/to/lcod-run --version 0.1.14
+   ./scripts/lcod kernel install dev --path /path/to/lcod-run --version 0.1.15
 
    ./scripts/lcod kernel ls
    ```
