@@ -27,6 +27,8 @@ On macOS or Linux, install `jq` via the system package manager (`brew install jq
 
 Both installers reuse an existing writable `lcod` binary when found on your `PATH`; otherwise they fall back to user-friendly directories such as `~/.local/bin` (Unix) or `%USERPROFILE%\bin` (Windows).
 
+Automatic updates run every 24 hours (`LCOD_AUTO_UPDATE_INTERVAL` in seconds, or disable with `LCOD_DISABLE_AUTO_UPDATE=1`). When enabled, the CLI refreshes itself as well as any installed kernel before execution.
+
 ## State directory layout
 
 The CLI stores its state under `~/.lcod` (configurable via environment variables):

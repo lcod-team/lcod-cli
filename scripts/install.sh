@@ -36,19 +36,7 @@ fetch_asset() {
 }
 
 unique_dirs() {
-  declare -A seen=()
-  local dir
-  for dir in "$@"; do
-    [[ -z "${dir}" ]] && continue
-    dir=$(printf '%s' "${dir}" | sed 's:/*$::')
-    if [[ -z "${dir}" ]]; then
-      continue
-    fi
-    if [[ -z "${seen["$dir"]+x}" ]]; then
-      printf '%s\n' "$dir"
-      seen["$dir"]=1
-    fi
-  done
+  printf '%s\n' "$@" | sed 's:/*$::' | sed '/^$/d' | awk '!seen[$0]++'
 }
 
 select_target_dir() {

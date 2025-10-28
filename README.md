@@ -40,6 +40,8 @@ irm https://raw.githubusercontent.com/lcod-team/lcod-cli/main/powershell/install
 
 Both installers update an existing `lcod` executable when it is writable in your `PATH`; otherwise they pick a user-scoped directory such as `~/.local/bin` or `%USERPROFILE%\bin` and create it if necessary.
 
+The CLI checks for updates (itself and the installed kernels) every 24 hours by default. Adjust the interval via `LCOD_AUTO_UPDATE_INTERVAL=<seconds>` or disable the behaviour with `LCOD_DISABLE_AUTO_UPDATE=1`.
+
 ## Getting started
 
 1. Clone the repository:
