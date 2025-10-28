@@ -40,29 +40,38 @@ unique_dirs() {
   printf '%s\n' "$@" | sed 's:/*$::' | sed '/^$/d' | awk '!seen[$0]++'
 }
 
-select_target_dir() {
-  local candidates=()
+first_writable_existing() {
+  local current
+  if current=$(command -v "${SCRIPT_NAME}" 2>/dev/null); then
+    if [[ -w "${current}" ]]; then
+      printf '%s\n' "$(dirname "${current}")"
+      return 0
+    fi
+  fi
+  return 1
+}
+
+collect_candidates() {
+  local list=()
 
   if [[ -n "${TARGET_OVERRIDE}" ]]; then
-    candidates+=("${TARGET_OVERRIDE}")
+    list+=("${TARGET_OVERRIDE}")
   fi
 
-  local existing
-  if existing=$(command -v "${SCRIPT_NAME}" 2>/dev/null); then
-    candidates+=("$(dirname "${existing}")")
+  local existing_dir
+  if existing_dir=$(first_writable_existing); then
+    list+=("${existing_dir}")
   fi
 
-  candidates+=("${HOME}/.local/bin" "${HOME}/bin")
+  list+=("${HOME}/.bin" "${HOME}/bin" "${HOME}/.local/bin" "${HOME}/local/bin")
 
   IFS=':' read -r -a path_entries <<< "${PATH}"
   for entry in "${path_entries[@]}"; do
     [[ -z "${entry}" ]] && continue
-    if [[ "${entry}" == "${HOME}"/* && -d "${entry}" ]]; then
-      candidates+=("${entry}")
-    fi
+    list+=("${entry}")
   done
 
-  unique_dirs "${candidates[@]}"
+  unique_dirs "${list[@]}"
 }
 
 install_script() {
@@ -130,7 +139,7 @@ main() {
       fi
       return 0
     fi
-  done < <(select_target_dir)
+  done < <(collect_candidates)
 
   err "Could not find a writable directory in PATH. Set LCOD_INSTALL_DIR to override."
   return 1

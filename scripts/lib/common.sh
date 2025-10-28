@@ -79,7 +79,7 @@ fetch_latest_runtime_version() {
 }
 
 detect_platform() {
-  local os arch
+  local os="" arch=""
   os=$(uname -s | tr '[:upper:]' '[:lower:]')
   arch=$(uname -m)
 
