@@ -14,7 +14,7 @@ Command-line tooling for installing and interacting with LCOD kernels. The CLI w
 
 ```
 scripts/
-  lcod.sh            # Bash entry point
+  lcod               # Bash entry point
   lib/common.sh      # Shared helpers (logging, argument parsing)
 powershell/
   lcod.ps1           # PowerShell entry point for Windows users
@@ -36,7 +36,7 @@ The CLI is intentionally thin. Most responsibilities live in `lcod-release` (ver
 2. Run the local bootstrap script (under development):
 
    ```
-   ./scripts/lcod.sh --help
+   ./scripts/lcod --help
    ```
 
 3. For Windows PowerShell:

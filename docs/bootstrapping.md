@@ -44,6 +44,18 @@ Future commands will append entries to `installedKernels` with fields such as `i
 
 PowerShell and Bash share the same state directory, so running the command from either shell keeps the cache in sync.
 
+## macOS quarantine note
+
+When downloading the Rust kernel (`lcod-run`) outside of Homebrew, macOS may quarantine the binary.
+After extraction, the CLI will run `xattr -cr <binary>` to strip the quarantine bits.
+Until the install command is wired, you can manually apply:
+
+```
+xattr -cr path/to/lcod-run
+```
+
+This is a no-op on other platforms.
+
 ## Next steps
 
 - Implement the `lcod kernel install` command, populating `installedKernels`.  

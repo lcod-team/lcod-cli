@@ -150,3 +150,18 @@ config_kernel_exists() {
 config_list_kernels() {
   jq '.' "${LCOD_CONFIG}"
 }
+
+clear_quarantine_if_needed() {
+  local target="${1:-}"
+  if [[ -z "${target}" || ! -e "${target}" ]]; then
+    return
+  fi
+
+  if [[ "$(uname -s)" == "Darwin" ]]; then
+    if command -v xattr >/dev/null 2>&1; then
+      if ! xattr -cr "${target}" 2>/dev/null; then
+        log_warn "Failed to clear quarantine attributes on ${target}"
+      fi
+    fi
+  fi
+}
