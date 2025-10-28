@@ -48,8 +48,8 @@ The CLI is intentionally thin. Most responsibilities live in `lcod-release` (ver
 4. Install a kernel runtime either from a local path or directly from the latest release:
 
    ```
-   # download the appropriate lcod-run archive (auto-detects platform, fetches latest by default)
-   ./scripts/lcod kernel install rust --from-release --version 0.1.13
+   # download the appropriate lcod-run archive (auto-detects platform, fetches latest release)
+   ./scripts/lcod kernel install rs
 
    # or copy an existing binary that you built locally
    ./scripts/lcod kernel install dev --path /path/to/lcod-run --version 0.1.13

@@ -170,6 +170,30 @@ function Get-ReleaseAssetUrl([string]$Repo, [string]$Version, [string]$Platform)
     return "https://github.com/$Repo/releases/download/lcod-run-v$Version/lcod-run-$Platform.$ext"
 }
 
+function Get-DefaultKernelRepo([string]$KernelId) {
+    switch ($KernelId) {
+        { $_ -in @('rs','rust') } { return $env:LCOD_RS_RELEASE_REPO ?? 'lcod-team/lcod-kernel-rs' }
+        { $_ -in @('node','js') } { return $env:LCOD_NODE_RELEASE_REPO ?? 'lcod-team/lcod-kernel-js' }
+        { $_ -in @('java','jvm') } { return $env:LCOD_JAVA_RELEASE_REPO ?? 'lcod-team/lcod-kernel-java' }
+        default { return $null }
+    }
+}
+
+function Get-LatestRuntimeVersion([string]$Repo) {
+    $api = "https://api.github.com/repos/$Repo/releases/latest"
+    try {
+        $json = (Invoke-WebRequest -Uri $api -UseBasicParsing -ErrorAction Stop).Content | ConvertFrom-Json
+        if (-not $json.tag_name) { throw "" }
+        $tag = $json.tag_name -replace '^lcod-run-v', ''
+        $tag = $tag -replace '^v', ''
+        return $tag
+    }
+    catch {
+        Write-ErrorMessage ("Unable to determine latest release for {0}" -f $Repo)
+        return $null
+    }
+}
+
 function Download-File([string]$Url, [string]$Destination) {
     Invoke-WebRequest -Uri $Url -OutFile $Destination -UseBasicParsing
 }
@@ -361,9 +385,18 @@ function Kernel-Install([string[]]$Args) {
     $force = $false
     $fromRelease = $false
     $platformId = $null
-    $releaseRepo = if ($env:LCOD_RELEASE_REPO) { $env:LCOD_RELEASE_REPO } else { "lcod-team/lcod-kernel-rs" }
+    $releaseRepo = $env:LCOD_RELEASE_REPO
     $tempDir = $null
     $assetPath = $null
+    $fromReleaseDefault = $false
+
+    if (-not $releaseRepo) {
+        $mappedRepo = Get-DefaultKernelRepo $kernelId
+        if ($mappedRepo) {
+            $releaseRepo = $mappedRepo
+            $fromReleaseDefault = $true
+        }
+    }
 
     for ($i = 2; $i -lt $Args.Length; $i++) {
         switch ($Args[$i]) {
@@ -410,14 +443,19 @@ function Kernel-Install([string[]]$Args) {
         }
     }
 
+    if (-not $fromRelease -and -not $sourcePath -and $fromReleaseDefault) {
+        $fromRelease = $true
+    }
+
     if ($fromRelease) {
+        if (-not $releaseRepo) {
+            Write-ErrorMessage "No release repository configured; use --repo <owner/repo>."
+            exit 1
+        }
+
         if (-not $kernelVersion) {
-            $kernelVersion = Get-CachedRemoteVersion
+            $kernelVersion = Get-LatestRuntimeVersion $releaseRepo
             if (-not $kernelVersion) {
-                $kernelVersion = Update-VersionCache
-            }
-            if (-not $kernelVersion) {
-                Write-ErrorMessage "Unable to determine release version; pass --version."
                 exit 1
             }
         }

@@ -59,6 +59,21 @@ fetch_latest_version() {
   curl -fsSL "${version_url}" 2>/dev/null
 }
 
+fetch_latest_runtime_version() {
+  require_command curl "Install curl to query GitHub releases."
+  local repo="${1:?repo required}"
+  local api_url="https://api.github.com/repos/${repo}/releases/latest"
+  local tag
+  tag=$(curl -fsSL -H "Accept: application/vnd.github+json" "${api_url}" | jq -r '.tag_name // empty')
+  if [[ -z "${tag}" ]]; then
+    log_error "Unable to determine latest release for ${repo}"
+    return 1
+  fi
+  tag="${tag#lcod-run-v}"
+  tag="${tag#v}"
+  printf '%s' "${tag}"
+}
+
 detect_platform() {
   local os arch
   os=$(uname -s | tr '[:upper:]' '[:lower:]')

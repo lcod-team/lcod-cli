@@ -31,6 +31,24 @@ This is an early prototype. Most commands are placeholders until the backend scr
 EOF
 }
 
+resolve_kernel_repo() {
+  local kernel_id="${1:?kernel id required}"
+  case "${kernel_id}" in
+    rs|rust)
+      printf '%s' "${LCOD_RS_RELEASE_REPO:-lcod-team/lcod-kernel-rs}"
+      ;;
+    node|js)
+      printf '%s' "${LCOD_NODE_RELEASE_REPO:-lcod-team/lcod-kernel-js}"
+      ;;
+    java|jvm)
+      printf '%s' "${LCOD_JAVA_RELEASE_REPO:-lcod-team/lcod-kernel-java}"
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
 cmd_version() {
   ensure_environment
   local version_file="${ROOT_DIR}/VERSION"
@@ -127,9 +145,16 @@ cmd_kernel_install() {
   local force="false"
   local from_release="false"
   local release_platform=""
-  local release_repo="${LCOD_RELEASE_REPO:-lcod-team/lcod-kernel-rs}"
+  local release_repo="${LCOD_RELEASE_REPO:-}"
   local cleanup_dir=""
   local asset_path=""
+  local default_from_release="false"
+
+  local mapped_repo
+  if mapped_repo=$(resolve_kernel_repo "${kernel_id}" 2>/dev/null); then
+    release_repo="${release_repo:-${mapped_repo}}"
+    default_from_release="true"
+  fi
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -168,14 +193,19 @@ cmd_kernel_install() {
     esac
   done
 
+  if [[ "${from_release}" != "true" && -z "${source_path}" && "${default_from_release}" == "true" ]]; then
+    from_release="true"
+  fi
+
   if [[ "${from_release}" == "true" ]]; then
+    if [[ -z "${release_repo}" ]]; then
+      log_error "No release repository configured for kernel '${kernel_id}'. Use --repo <owner/repo>."
+      exit 1
+    fi
     if [[ -z "${version}" ]]; then
-      version=$(get_cached_remote_version)
-      if [[ -z "${version}" ]]; then
-        if ! version=$(update_version_cache); then
-          log_error "Unable to determine release version; pass --version explicitly."
-          exit 1
-        fi
+      if ! version=$(fetch_latest_runtime_version "${release_repo}"); then
+        log_error "Unable to determine release version; pass --version explicitly."
+        exit 1
       fi
     fi
 

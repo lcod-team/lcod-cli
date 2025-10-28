@@ -47,7 +47,8 @@ PowerShell and Bash share the same state directory, so running the command from 
 ## Kernel management primitives
 
 - `lcod kernel install <id>` supports two modes:
-  - `--from-release [--version <semver>] [--platform <id>]` downloads the published `lcod-run` archive from GitHub (default repo `lcod-team/lcod-kernel-rs`, auto-detected platform) and installs it under `~/.lcod/bin/<id>`. Passing `--version` is recommended until the orchestrator exposes a runtime manifest.
+  - With no extra flags (`lcod kernel install rs|node|java`), the CLI resolves the matching GitHub repository, fetches the latest release, auto-detects the local platform, and installs the binary under `~/.lcod/bin/<id>`.
+  - `--from-release [--version <semver>] [--platform <id>]` forces release mode with explicit overrides; keep `--version` handy if you need to pin a specific runtime.
   - `--path <binary> [--version <semver>]` copies an existing executable, clears macOS quarantine attributes, and records the entry in `config.json`. Use `--force` to overwrite an existing install.
 - `lcod kernel ls` prints the recorded kernels, their version metadata, and whether they are the default runtime.
 - `lcod kernel default <id>` switches the preferred runtime; the value falls back to `null` if you later remove that kernel.
