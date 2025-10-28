@@ -24,6 +24,22 @@ docs/
 
 The CLI is intentionally thin. Most responsibilities live in `lcod-release` (version manifest, cascade workflows) and the individual kernels.
 
+## Installation
+
+Install the CLI globally with a single command:
+
+```
+curl -fsSL https://raw.githubusercontent.com/lcod-team/lcod-cli/main/scripts/install.sh | bash
+```
+
+Windows / PowerShell:
+
+```
+irm https://raw.githubusercontent.com/lcod-team/lcod-cli/main/powershell/install.ps1 | iex
+```
+
+Both installers update an existing `lcod` executable when it is writable in your `PATH`; otherwise they pick a user-scoped directory such as `~/.local/bin` or `%USERPROFILE%\bin` and create it if necessary.
+
 ## Getting started
 
 1. Clone the repository:
@@ -58,6 +74,16 @@ The CLI is intentionally thin. Most responsibilities live in `lcod-release` (ver
    ```
 
    Set `LCOD_RELEASE_REPO=owner/repo` to point the downloader at a different release source if needed (defaults to `lcod-team/lcod-kernel-rs`).
+
+5. Execute composes via the default runtime:
+
+   ```
+   # forward arguments to lcod-run (e.g. --compose, --input, ...)
+   lcod run -- --compose path/to/compose.yaml --input input.json
+
+   # pick an explicit kernel when multiple runtimes are installed
+   lcod run --kernel node -- --compose demo.yaml
+   ```
 
 ## Roadmap
 

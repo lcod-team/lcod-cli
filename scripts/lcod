@@ -23,6 +23,7 @@ Commands:
   kernel install <id>   Install or update a kernel (local path or release asset).
   kernel remove <id>    Remove a kernel from the manifest.
   kernel default <id>   Set the default kernel.
+  run [options]         Execute the default kernel runtime with the given arguments.
   cache clean           Remove cached artefacts.
   self-update           Force immediate update check.
   help                  Show this message.
@@ -204,7 +205,6 @@ cmd_kernel_install() {
     fi
     if [[ -z "${version}" ]]; then
       if ! version=$(fetch_latest_runtime_version "${release_repo}"); then
-        log_error "Unable to determine release version; pass --version explicitly."
         exit 1
       fi
     fi
@@ -296,6 +296,94 @@ cmd_kernel_install() {
   fi
 }
 
+cmd_run() {
+  ensure_environment
+
+  local kernel_id=""
+  local args=()
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --kernel)
+        kernel_id="${2:-}"
+        shift 2 || true
+        ;;
+      -h|--help)
+        cat <<'EOF'
+Usage: lcod run [--kernel <id>] [--] <args...>
+
+Executes the configured kernel runtime (defaulting to the one marked as default) and forwards the provided arguments.
+EOF
+        return 0
+        ;;
+      --)
+        shift
+        args+=("$@")
+        break
+        ;;
+      *)
+        args+=("$1")
+        shift
+        ;;
+    esac
+  done
+
+  if [[ -z "${kernel_id}" ]]; then
+    kernel_id=$(config_get_default_kernel)
+  fi
+
+  if [[ -z "${kernel_id}" ]]; then
+    log_error "No default kernel configured. Install one with 'lcod kernel install <id>' or pass --kernel explicitly."
+    exit 1
+  fi
+
+  if ! config_kernel_exists "${kernel_id}"; then
+    log_error "Kernel '${kernel_id}' is not registered. Install it first."
+    exit 1
+  fi
+
+  local kernel_path
+  kernel_path=$(config_get_kernel_path "${kernel_id}")
+  if [[ -z "${kernel_path}" || ! -e "${kernel_path}" ]]; then
+    log_error "Kernel binary for '${kernel_id}' not found at ${kernel_path}."
+    exit 1
+  fi
+
+  local cmd
+  local forward=()
+
+  case "${kernel_path}" in
+    *.jar)
+      cmd="java"
+      forward=(-jar "${kernel_path}")
+      ;;
+    *.mjs|*.cjs|*.js)
+      cmd="node"
+      forward=("${kernel_path}")
+      ;;
+    *.ps1)
+      if command -v pwsh >/dev/null 2>&1; then
+        cmd="pwsh"
+      else
+        cmd="powershell"
+      fi
+      forward=(-File "${kernel_path}")
+      ;;
+    *.bat|*.cmd)
+      cmd="${kernel_path}"
+      ;;
+    *)
+      cmd="${kernel_path}"
+      ;;
+  esac
+
+  if [[ ${#args[@]} -gt 0 ]]; then
+    forward+=("${args[@]}")
+  fi
+
+  exec "${cmd}" "${forward[@]}"
+}
+
 cmd_kernel_remove() {
   local kernel_id="${1:-}"
   if [[ -z "${kernel_id}" ]]; then
@@ -376,6 +464,9 @@ main() {
           exit 1
           ;;
       esac
+      ;;
+    run)
+      cmd_run "$@"
       ;;
     cache)
       local sub="${1:-}"

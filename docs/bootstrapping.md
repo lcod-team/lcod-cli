@@ -11,6 +11,22 @@ This document explains how the CLI initialises its workspace, which prerequisite
 
 On macOS or Linux, install `jq` via the system package manager (`brew install jq`, `apt install jq`, …).
 
+### Installer shortcuts
+
+- Shell:
+
+  ```
+  curl -fsSL https://raw.githubusercontent.com/lcod-team/lcod-cli/main/scripts/install.sh | bash
+  ```
+
+- PowerShell:
+
+  ```
+  irm https://raw.githubusercontent.com/lcod-team/lcod-cli/main/powershell/install.ps1 | iex
+  ```
+
+Both installers reuse an existing writable `lcod` binary when found on your `PATH`; otherwise they fall back to user-friendly directories such as `~/.local/bin` (Unix) or `%USERPROFILE%\bin` (Windows).
+
 ## State directory layout
 
 The CLI stores its state under `~/.lcod` (configurable via environment variables):
@@ -53,6 +69,7 @@ PowerShell and Bash share the same state directory, so running the command from 
 - `lcod kernel ls` prints the recorded kernels, their version metadata, and whether they are the default runtime.
 - `lcod kernel default <id>` switches the preferred runtime; the value falls back to `null` if you later remove that kernel.
 - `lcod kernel remove <id>` deletes the managed binary (only if it lives under `~/.lcod/bin/`) and prunes the manifest.
+- `lcod run [--kernel <id>] [--] <args...>` executes the chosen runtime (defaulting to the configured default kernel) and forwards all arguments to it; `.jar` artifacts use `java -jar`, `.mjs/.js` use `node`, and native binaries are executed directly.
 
 For custom release sources, export `LCOD_RELEASE_REPO=owner/repo` before running the command (it defaults to `lcod-team/lcod-kernel-rs`).
 

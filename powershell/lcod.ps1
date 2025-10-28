@@ -365,6 +365,7 @@ Commands:
   kernel install <id>   Install or update a kernel (local path or release asset).
   kernel remove <id>    Remove a kernel from the manifest.
   kernel default <id>   Set the default kernel.
+  run [options]         Execute the default kernel runtime with the given arguments.
   cache clean           Clear cached artefacts.
   self-update           Force immediate update check (placeholder).
   help                  Show this help message.
@@ -554,6 +555,88 @@ function Kernel-Install([string[]]$Args) {
     if ($tempDir) { Remove-Item -Recurse -Force $tempDir }
 }
 
+function Run-Kernel([string[]]$Args) {
+    Ensure-State
+    $kernelId = $null
+    $forward = @()
+
+    for ($i = 0; $i -lt $Args.Length; $i++) {
+        $arg = $Args[$i]
+        if ($arg -eq "--kernel") {
+            if ($i + 1 -ge $Args.Length) {
+                Write-ErrorMessage "--kernel requires a value."
+                exit 1
+            }
+            $kernelId = $Args[$i + 1]
+            $i++
+            continue
+        }
+        elseif ($arg -eq "--help" -or $arg -eq "-h") {
+            Write-Info "Usage: lcod run [--kernel <id>] [--] <args...>"
+            return
+        }
+        elseif ($arg -eq "--") {
+            if ($i + 1 -lt $Args.Length) {
+                $forward = $Args[($i + 1)..($Args.Length - 1)]
+            }
+            break
+        }
+        else {
+            $forward = $Args[$i..($Args.Length - 1)]
+            break
+        }
+    }
+
+    if (-not $kernelId) {
+        $kernelId = (Get-Config).defaultKernel
+    }
+
+    if (-not $kernelId) {
+        Write-ErrorMessage "No default kernel configured. Install one or pass --kernel <id>."
+        exit 1
+    }
+
+    $config = Get-Config
+    if (-not (Kernel-Exists $config $kernelId)) {
+        Write-ErrorMessage ("Kernel '{0}' is not registered. Install it first." -f $kernelId)
+        exit 1
+    }
+
+    $kernelPath = Get-KernelPath $config $kernelId
+    if (-not $kernelPath -or -not (Test-Path $kernelPath)) {
+        Write-ErrorMessage ("Kernel binary for '{0}' not found at {1}." -f $kernelId, $kernelPath)
+        exit 1
+    }
+
+    $command = $null
+    $cmdArgs = @()
+    switch -Wildcard ($kernelPath.ToLower()) {
+        "*.jar" {
+            $command = "java"
+            $cmdArgs = @("-jar", $kernelPath)
+        }
+        "*.mjs" { $command = "node"; $cmdArgs = @($kernelPath) }
+        "*.cjs" { $command = "node"; $cmdArgs = @($kernelPath) }
+        "*.js"  { $command = "node"; $cmdArgs = @($kernelPath) }
+        "*.ps1" {
+            $command = (Get-Command pwsh -ErrorAction SilentlyContinue) ? "pwsh" : "powershell"
+            $cmdArgs = @("-File", $kernelPath)
+        }
+        "*.cmd" { $command = $kernelPath }
+        "*.bat" { $command = $kernelPath }
+        default {
+            $command = $kernelPath
+        }
+    }
+
+    if ($forward) {
+        $cmdArgs += $forward
+    }
+
+    & $command @cmdArgs
+    exit $LASTEXITCODE
+}
+
 function Kernel-Remove([string[]]$Args) {
     if ($Args.Length -lt 2) {
         Write-ErrorMessage "Usage: lcod kernel remove <kernel-id>"
@@ -632,6 +715,7 @@ switch ($Command) {
             }
         }
     }
+    "run" { Run-Kernel $Args }
     "cache" {
         if ($Args.Length -eq 0) {
             Write-ErrorMessage "Missing cache subcommand."
