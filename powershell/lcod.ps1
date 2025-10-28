@@ -18,6 +18,9 @@ $CacheDir = if ($env:LCOD_CACHE_DIR) { $env:LCOD_CACHE_DIR } else { Join-Path $S
 $ConfigPath = if ($env:LCOD_CONFIG) { $env:LCOD_CONFIG } else { Join-Path $StateDir "config.json" }
 $UpdateStamp = Join-Path $StateDir "last-update"
 $VersionCache = Join-Path $StateDir "latest-version.json"
+$CliUpdateCache = Join-Path $StateDir "cli-update.json"
+$KernelUpdateCache = Join-Path $StateDir "kernel-update.json"
+$AutoUpdateInterval = if ($env:LCOD_AUTO_UPDATE_INTERVAL) { [int]$env:LCOD_AUTO_UPDATE_INTERVAL } else { 86400 }
 
 $IsWindows = [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Windows)
 $IsMacOS = [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::OSX)
@@ -211,6 +214,121 @@ function Extract-Archive([string]$Archive, [string]$Destination) {
     else {
         throw "Unsupported archive format: $Archive"
     }
+}
+
+function Write-CliUpdateCache([string]$Version, [int]$Timestamp) {
+    $payload = @{ version = $Version; lastCheck = $Timestamp }
+    $payload | ConvertTo-Json | Set-Content -Path $CliUpdateCache -Encoding UTF8
+}
+
+function Get-CliUpdateCache {
+    if (Test-Path $CliUpdateCache) {
+        try {
+            return (Get-Content -Path $CliUpdateCache -Raw | ConvertFrom-Json)
+        }
+        catch { return $null }
+    }
+    return $null
+}
+
+function Invoke-CliAutoUpdate {
+    if ($env:LCOD_DISABLE_AUTO_UPDATE -eq '1') { return }
+    if (Test-Path (Join-Path $RepoRoot '.git')) { return }
+
+    $cache = Get-CliUpdateCache
+    $lastCheck = if ($cache -and $cache.lastCheck) { [int]$cache.lastCheck } else { 0 }
+    $cachedVersion = if ($cache -and $cache.version) { $cache.version } else { '' }
+    $now = [int][DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+
+    if ($AutoUpdateInterval -gt 0 -and ($now - $lastCheck) -lt $AutoUpdateInterval) {
+        return
+    }
+
+    $scriptPath = $MyInvocation.MyCommand.Path
+    $tmp = [System.IO.Path]::GetTempFileName()
+    $cliUrl = if ($env:LCOD_CLI_SCRIPT_URL) { $env:LCOD_CLI_SCRIPT_URL } else { "https://raw.githubusercontent.com/lcod-team/lcod-cli/main/scripts/lcod" }
+
+    try {
+        $remoteVersion = Fetch-LatestVersion -Repo 'lcod-team/lcod-cli'
+    }
+    catch {
+        $remoteVersion = $cachedVersion
+    }
+
+    try {
+        Invoke-WebRequest -Uri $cliUrl -OutFile $tmp -UseBasicParsing
+        Copy-Item -LiteralPath $tmp -Destination $scriptPath -Force
+        if ($remoteVersion) { $cachedVersion = $remoteVersion }
+        Write-Info ("CLI auto-updated to {0}." -f $cachedVersion)
+    }
+    catch {
+        Write-Warn "CLI auto-update failed (insufficient permissions?)."
+    }
+    finally {
+        Remove-Item -Force -ErrorAction SilentlyContinue $tmp
+    }
+
+    Write-CliUpdateCache $cachedVersion $now
+}
+
+function Get-KernelCache([string]$KernelId) {
+    if (Test-Path $KernelUpdateCache) {
+        try {
+            $cache = Get-Content -Path $KernelUpdateCache -Raw | ConvertFrom-Json
+            if ($cache.kernels) { return $cache.kernels.$KernelId }
+        }
+        catch { return $null }
+    }
+    return $null
+}
+
+function Write-KernelCache([string]$KernelId, [string]$Version, [int]$Timestamp) {
+    $cache = if (Test-Path $KernelUpdateCache) {
+        try { Get-Content -Path $KernelUpdateCache -Raw | ConvertFrom-Json }
+        catch { @{ kernels = @{} } }
+    } else { @{ kernels = @{} } }
+    if (-not $cache.kernels) { $cache.kernels = @{} }
+    $cache.kernels.$KernelId = @{ version = $Version; lastCheck = $Timestamp }
+    $cache | ConvertTo-Json -Depth 6 | Set-Content -Path $KernelUpdateCache -Encoding UTF8
+}
+
+function AutoUpdate-KernelIfNeeded([string]$KernelId) {
+    if ($env:LCOD_DISABLE_AUTO_UPDATE -eq '1') { return }
+
+    $repo = Get-DefaultKernelRepo $KernelId
+    if (-not $repo) { return }
+
+    $cacheEntry = Get-KernelCache $KernelId
+    $lastCheck = if ($cacheEntry -and $cacheEntry.lastCheck) { [int]$cacheEntry.lastCheck } else { 0 }
+    $now = [int][DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+
+    if ($AutoUpdateInterval -gt 0 -and ($now - $lastCheck) -lt $AutoUpdateInterval) {
+        return
+    }
+
+    $config = Get-Config
+    $kernelEntry = $config.installedKernels | Where-Object { $_.id -eq $KernelId } | Select-Object -First 1
+    if (-not $kernelEntry) {
+        Write-KernelCache $KernelId $null $now
+        return
+    }
+
+    $currentVersion = $kernelEntry.version
+    try {
+        $remoteVersion = Get-LatestRuntimeVersion $repo
+    }
+    catch {
+        Write-KernelCache $KernelId $currentVersion $now
+        return
+    }
+
+    if ($remoteVersion -and $remoteVersion -ne $currentVersion) {
+        Write-Info ("Auto-updating kernel '{0}' to {1}." -f $KernelId, $remoteVersion)
+        Kernel-Install @($KernelId, '--from-release', '--version', $remoteVersion, '--repo', $repo, '--force')
+        $currentVersion = $remoteVersion
+    }
+
+    Write-KernelCache $KernelId $currentVersion $now
 }
 
 function Touch-UpdateStamp {
@@ -553,6 +671,9 @@ function Kernel-Install([string[]]$Args) {
     }
 
     if ($tempDir) { Remove-Item -Recurse -Force $tempDir }
+
+    $timestamp = [int][DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+    Write-KernelCache $kernelId $kernelVersion $timestamp
 }
 
 function Run-Kernel([string[]]$Args) {
@@ -601,6 +722,9 @@ function Run-Kernel([string[]]$Args) {
         Write-ErrorMessage ("Kernel '{0}' is not registered. Install it first." -f $kernelId)
         exit 1
     }
+
+    AutoUpdate-KernelIfNeeded $kernelId
+    $config = Get-Config
 
     $kernelPath = Get-KernelPath $config $kernelId
     if (-not $kernelPath -or -not (Test-Path $kernelPath)) {
@@ -668,6 +792,7 @@ function Kernel-Remove([string[]]$Args) {
 }
 
 Ensure-State
+Invoke-CliAutoUpdate
 
 switch ($Command) {
     "version" { Get-Version }

@@ -50,6 +50,111 @@ resolve_kernel_repo() {
   esac
 }
 
+maybe_auto_update_cli() {
+  if [[ "${LCOD_DISABLE_AUTO_UPDATE:-}" == "1" ]]; then
+    return
+  fi
+
+  # Skip when running inside a repository checkout to avoid modifying tracked files
+  if [[ -d "${ROOT_DIR}/.git" ]]; then
+    return
+  fi
+
+  local interval
+  interval=$(auto_update_interval)
+  local now
+  now=$(current_epoch)
+  local last_check
+  last_check=$(get_cli_last_check)
+  if [[ -n "${interval}" && "${interval}" != "0" ]] && (( now - last_check < interval )); then
+    return
+  fi
+
+  local cached_version
+  cached_version=$(get_cli_cached_version)
+
+  local script_path
+  script_path=$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || printf '%s' "${BASH_SOURCE[0]}")
+
+  if [[ ! -w "${script_path}" ]]; then
+    write_cli_update_cache "${cached_version}" "${now}"
+    return
+  fi
+
+  local remote_version
+  if ! remote_version=$(fetch_latest_version "lcod-team/lcod-cli"); then
+    write_cli_update_cache "${cached_version}" "${now}"
+    return
+  fi
+
+  local tmp
+  tmp=$(mktemp)
+  local cli_url="${LCOD_CLI_SCRIPT_URL:-https://raw.githubusercontent.com/lcod-team/lcod-cli/main/scripts/lcod}"
+  if ! download_file "${cli_url}" "${tmp}"; then
+    rm -f "${tmp}"
+    write_cli_update_cache "${cached_version}" "${now}"
+    return
+  fi
+
+  chmod +x "${tmp}"
+  if mv "${tmp}" "${script_path}" 2>/dev/null; then
+    cached_version="${remote_version}"
+    log_info "CLI auto-updated to ${cached_version}."
+  else
+    rm -f "${tmp}"
+    log_warn "CLI auto-update failed (unable to write to ${script_path})."
+  fi
+
+  write_cli_update_cache "${cached_version}" "${now}"
+}
+
+auto_update_kernel_if_needed() {
+  local kernel_id="${1:?kernel id required}"
+
+  if [[ "${LCOD_DISABLE_AUTO_UPDATE:-}" == "1" ]]; then
+    return
+  fi
+
+  local repo
+  if ! repo=$(resolve_kernel_repo "${kernel_id}" 2>/dev/null); then
+    return
+  fi
+
+  local interval
+  interval=$(auto_update_interval)
+  local now
+  now=$(current_epoch)
+  local last_check
+  last_check=$(get_kernel_last_check "${kernel_id}")
+  if [[ -n "${interval}" && "${interval}" != "0" ]] && (( now - last_check < interval )); then
+    return
+  fi
+
+  local current_version
+  current_version=$(jq -r --arg id "${kernel_id}" '.installedKernels[]? | select(.id == $id) | .version // ""' "${LCOD_CONFIG}")
+  if [[ -z "${current_version}" ]]; then
+    update_kernel_update_cache "${kernel_id}" "" "${now}"
+    return
+  fi
+
+  local remote_version
+  if ! remote_version=$(fetch_latest_runtime_version "${repo}"); then
+    update_kernel_update_cache "${kernel_id}" "${current_version}" "${now}"
+    return
+  fi
+
+  if [[ -n "${remote_version}" && "${remote_version}" != "${current_version}" ]]; then
+    log_info "Auto-updating kernel '${kernel_id}' to ${remote_version}."
+    if cmd_kernel_install "${kernel_id}" --from-release --version "${remote_version}" --force --repo "${repo}"; then
+      current_version="${remote_version}"
+    else
+      log_warn "Auto-update failed for kernel '${kernel_id}'."
+    fi
+  fi
+
+  update_kernel_update_cache "${kernel_id}" "${current_version}" "${now}"
+}
+
 cmd_version() {
   ensure_environment
   local version_file="${ROOT_DIR}/VERSION"
@@ -294,6 +399,8 @@ cmd_kernel_install() {
   if [[ -n "${cleanup_dir}" ]]; then
     rm -rf "${cleanup_dir}"
   fi
+
+  update_kernel_update_cache "${kernel_id}" "${version}" "$(current_epoch)"
 }
 
 cmd_run() {
@@ -341,6 +448,8 @@ EOF
     log_error "Kernel '${kernel_id}' is not registered. Install it first."
     exit 1
   fi
+
+  auto_update_kernel_if_needed "${kernel_id}"
 
   local kernel_path
   kernel_path=$(config_get_kernel_path "${kernel_id}")
@@ -432,6 +541,7 @@ cmd_self_update() {
 
 main() {
   ensure_environment
+  maybe_auto_update_cli
 
   local cmd="${1:-help}"
   shift || true

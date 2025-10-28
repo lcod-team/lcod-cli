@@ -15,6 +15,8 @@ function Write-Err($Message) {
 $baseUrl = if ($env:LCOD_BASE_URL) { $env:LCOD_BASE_URL } else { "https://raw.githubusercontent.com/lcod-team/lcod-cli/main" }
 $scriptName = "lcod.ps1"
 $cmdShimName = "lcod.cmd"
+$stateDir = if ($env:LCOD_STATE_DIR) { $env:LCOD_STATE_DIR } else { Join-Path $HOME ".lcod" }
+$cliUpdateCache = Join-Path $stateDir "cli-update.json"
 $tmpDir = Join-Path ([System.IO.Path]::GetTempPath()) ("lcod-cli-" + [Guid]::NewGuid().ToString())
 New-Item -ItemType Directory -Path $tmpDir | Out-Null
 try {
@@ -25,6 +27,15 @@ try {
         $psUrl = "$baseUrl/powershell/$scriptName"
         Invoke-WebRequest -Uri $psUrl -OutFile (Join-Path $tmpDir $scriptName) -UseBasicParsing
     }
+
+    if ($env:LCOD_SOURCE -and (Test-Path (Join-Path $env:LCOD_SOURCE "VERSION"))) {
+        $cliVersion = (Get-Content -Path (Join-Path $env:LCOD_SOURCE 'VERSION') -Raw).Trim()
+    }
+    else {
+        $versionUrl = "$baseUrl/VERSION"
+        $cliVersion = (Invoke-WebRequest -Uri $versionUrl -UseBasicParsing -ErrorAction Stop).Content.Trim()
+    }
+    if (-not $cliVersion) { $cliVersion = 'dev' }
 
     function Get-Candidates {
         param([string]$Override)
@@ -68,6 +79,10 @@ try {
             if (($env:PATH -split ';') -notcontains $dir) {
                 Write-Info "Add $dir to your PATH if it's not present already."
             }
+            New-Item -ItemType Directory -Path $stateDir -Force | Out-Null
+            $timestamp = [int][DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+            $payload = @{ version = $cliVersion; lastCheck = $timestamp }
+            $payload | ConvertTo-Json | Set-Content -Path $cliUpdateCache -Encoding UTF8
             $installed = $true
             break
         }

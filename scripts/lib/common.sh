@@ -9,6 +9,10 @@ LCOD_CACHE_DIR="${LCOD_CACHE_DIR:-${LCOD_STATE_DIR}/cache}"
 LCOD_CONFIG="${LCOD_CONFIG:-${LCOD_STATE_DIR}/config.json}"
 LCOD_UPDATE_STAMP="${LCOD_STATE_DIR}/last-update"
 LCOD_VERSION_CACHE="${LCOD_STATE_DIR}/latest-version.json"
+LCOD_CLI_UPDATE_CACHE="${LCOD_STATE_DIR}/cli-update.json"
+LCOD_KERNEL_UPDATE_CACHE="${LCOD_STATE_DIR}/kernel-update.json"
+LCOD_AUTO_UPDATE_INTERVAL_DEFAULT=86400
+LCOD_AUTO_UPDATE_INTERVAL="${LCOD_AUTO_UPDATE_INTERVAL:-${LCOD_AUTO_UPDATE_INTERVAL_DEFAULT}}"
 
 log_info() {
   printf '[INFO] %s\n' "$*"
@@ -309,4 +313,68 @@ config_get_kernel_path() {
   jq -r --arg id "${kernel_id}" '
     (.installedKernels[]? | select(.id == $id) | .path) // empty
   ' "${LCOD_CONFIG}"
+}
+
+current_epoch() {
+  date -u +%s
+}
+
+get_cli_cached_version() {
+  if [[ -f "${LCOD_CLI_UPDATE_CACHE}" ]]; then
+    jq -r '.version // ""' "${LCOD_CLI_UPDATE_CACHE}" 2>/dev/null || true
+  fi
+}
+
+get_cli_last_check() {
+  if [[ -f "${LCOD_CLI_UPDATE_CACHE}" ]]; then
+    jq -r '.lastCheck // 0' "${LCOD_CLI_UPDATE_CACHE}" 2>/dev/null || printf '0'
+  else
+    printf '0'
+  fi
+}
+
+write_cli_update_cache() {
+  local version="$1"
+  local timestamp="$2"
+  mkdir -p "${LCOD_STATE_DIR}"
+  jq -n --arg version "${version}" --argjson lastCheck "${timestamp}" '{version:$version,lastCheck:$lastCheck}' > "${LCOD_CLI_UPDATE_CACHE}"
+}
+
+get_kernel_update_info() {
+  local kernel_id="${1:?kernel id required}"
+  if [[ -f "${LCOD_KERNEL_UPDATE_CACHE}" ]]; then
+    jq --arg id "${kernel_id}" '.kernels[$id] // {}' "${LCOD_KERNEL_UPDATE_CACHE}" 2>/dev/null || true
+  fi
+}
+
+get_kernel_last_check() {
+  local kernel_id="${1:?kernel id required}"
+  if [[ -f "${LCOD_KERNEL_UPDATE_CACHE}" ]]; then
+    jq -r --arg id "${kernel_id}" '.kernels[$id].lastCheck // 0' "${LCOD_KERNEL_UPDATE_CACHE}" 2>/dev/null || printf '0'
+  else
+    printf '0'
+  fi
+}
+
+update_kernel_update_cache() {
+  local kernel_id="${1:?kernel id required}"
+  local version="${2:-}"
+  local timestamp="${3:-0}"
+  mkdir -p "${LCOD_STATE_DIR}"
+  if [[ ! -f "${LCOD_KERNEL_UPDATE_CACHE}" ]]; then
+    jq -n '{kernels:{}}' > "${LCOD_KERNEL_UPDATE_CACHE}"
+  fi
+  jq --arg id "${kernel_id}" --arg version "${version}" --argjson lastCheck "${timestamp}" '
+    .kernels = (.kernels // {}) |
+    .kernels[$id] = {version:$version,lastCheck:$lastCheck}
+  ' "${LCOD_KERNEL_UPDATE_CACHE}" > "${LCOD_KERNEL_UPDATE_CACHE}.tmp" && mv "${LCOD_KERNEL_UPDATE_CACHE}.tmp" "${LCOD_KERNEL_UPDATE_CACHE}"
+}
+
+auto_update_interval() {
+  local interval="${LCOD_AUTO_UPDATE_INTERVAL}"
+  if [[ -z "${interval}" || ! "${interval}" =~ ^[0-9]+$ ]]; then
+    echo "${LCOD_AUTO_UPDATE_INTERVAL_DEFAULT}"
+  else
+    echo "${interval}"
+  fi
 }

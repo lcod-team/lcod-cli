@@ -7,6 +7,8 @@ PS_SCRIPT_NAME=lcod.ps1
 SOURCE_DIR=${LCOD_SOURCE:-}
 TARGET_OVERRIDE=${LCOD_INSTALL_DIR:-}
 INSTALL_POWERSHELL=${LCOD_INSTALL_POWERSHELL:-1}
+STATE_DIR=${LCOD_STATE_DIR:-${HOME}/.lcod}
+CLI_UPDATE_CACHE="${STATE_DIR}/cli-update.json"
 
 TMP_DIR=$(mktemp -d)
 cleanup() {
@@ -105,6 +107,18 @@ main() {
   fetch_asset "scripts/${SCRIPT_NAME}" "${TMP_DIR}/${SCRIPT_NAME}"
   chmod +x "${TMP_DIR}/${SCRIPT_NAME}"
 
+  local cli_version=""
+  if [[ -n "${SOURCE_DIR}" && -f "${SOURCE_DIR}/VERSION" ]]; then
+    cli_version=$(<"${SOURCE_DIR}/VERSION")
+  else
+    fetch_asset "VERSION" "${TMP_DIR}/VERSION"
+    cli_version=$(<"${TMP_DIR}/VERSION")
+  fi
+  cli_version=$(printf '%s' "${cli_version}" | tr -d '\r\n')
+  if [[ -z "${cli_version}" ]]; then
+    cli_version="dev"
+  fi
+
   local installed_path=""
   local dir
   while read -r dir; do
@@ -116,6 +130,14 @@ main() {
       fi
       if [[ ":${PATH}:" != *":${dir}:"* ]]; then
         info "Add ${dir} to your PATH to use 'lcod' globally."
+      fi
+      mkdir -p "${STATE_DIR}"
+      local epoch
+      epoch=$(date -u +%s)
+      if command -v jq >/dev/null 2>&1; then
+        jq -n --arg version "${cli_version}" --argjson lastCheck "${epoch}" '{version:$version,lastCheck:$lastCheck}' > "${CLI_UPDATE_CACHE}"
+      else
+        printf '{"version":"%s","lastCheck":%s}\n' "${cli_version}" "${epoch}" > "${CLI_UPDATE_CACHE}"
       fi
       return 0
     fi
