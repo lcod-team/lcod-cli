@@ -147,10 +147,6 @@ config_kernel_exists() {
   jq -e --arg id "${kernel_id}" '.installedKernels[]? | select(.id == $id)' "${LCOD_CONFIG}" >/dev/null 2>&1
 }
 
-config_list_kernels() {
-  jq '.' "${LCOD_CONFIG}"
-}
-
 clear_quarantine_if_needed() {
   local target="${1:-}"
   if [[ -z "${target}" || ! -e "${target}" ]]; then
@@ -164,4 +160,57 @@ clear_quarantine_if_needed() {
       fi
     fi
   fi
+}
+
+config_add_or_update_kernel() {
+  ensure_environment
+  local kernel_id="${1:?kernel id required}"
+  local kernel_version="${2:-}"
+  local kernel_path="${3:?kernel path required}"
+
+  local tmp
+  tmp=$(mktemp)
+  jq \
+    --arg id "${kernel_id}" \
+    --arg version "${kernel_version}" \
+    --arg path "${kernel_path}" \
+    '
+      .installedKernels =
+        ([.installedKernels[]? | select(.id != $id)] + [{
+          id: $id,
+          version: (if $version == "" then null else $version end),
+          path: $path
+        }])
+      | (if (.defaultKernel == null or .defaultKernel == "") then (.defaultKernel = $id) else . end)
+    ' "${LCOD_CONFIG}" > "${tmp}"
+  mv "${tmp}" "${LCOD_CONFIG}"
+}
+
+config_remove_kernel() {
+  ensure_environment
+  local kernel_id="${1:?kernel id required}"
+  local tmp
+  tmp=$(mktemp)
+  jq --arg id "${kernel_id}" '
+    .installedKernels = [.installedKernels[]? | select(.id != $id)] |
+    (if .defaultKernel == $id then
+      (if (.installedKernels | length) > 0 then
+         (.defaultKernel = (.installedKernels[0].id))
+       else
+         (.defaultKernel = null)
+       end)
+     else . end)
+  ' "${LCOD_CONFIG}" > "${tmp}"
+  mv "${tmp}" "${LCOD_CONFIG}"
+}
+
+config_list_kernels() {
+  jq '.' "${LCOD_CONFIG}"
+}
+
+config_get_kernel_path() {
+  local kernel_id="${1:?kernel id required}"
+  jq -r --arg id "${kernel_id}" '
+    (.installedKernels[]? | select(.id == $id) | .path) // empty
+  ' "${LCOD_CONFIG}"
 }

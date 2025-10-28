@@ -44,6 +44,13 @@ Future commands will append entries to `installedKernels` with fields such as `i
 
 PowerShell and Bash share the same state directory, so running the command from either shell keeps the cache in sync.
 
+## Kernel management primitives
+
+- `lcod kernel install <id> --path <binary> [--version <semver>]` copies the provided executable into `~/.lcod/bin/<id>`, clears macOS quarantine attributes, and records the entry in `config.json` (creating a default kernel if none exists). Use `--force` to overwrite.
+- `lcod kernel ls` prints the recorded kernels, their version metadata, and whether they are the default runtime.
+- `lcod kernel default <id>` switches the preferred runtime; the value falls back to `null` if you later remove that kernel.
+- `lcod kernel remove <id>` deletes the managed binary (only if it lives under `~/.lcod/bin/`) and prunes the manifest.
+
 ## macOS quarantine note
 
 When downloading the Rust kernel (`lcod-run`) outside of Homebrew, macOS may quarantine the binary.

@@ -19,6 +19,9 @@ $ConfigPath = if ($env:LCOD_CONFIG) { $env:LCOD_CONFIG } else { Join-Path $State
 $UpdateStamp = Join-Path $StateDir "last-update"
 $VersionCache = Join-Path $StateDir "latest-version.json"
 
+$IsWindows = [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Windows)
+$IsMacOS = [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::OSX)
+
 function Write-Info($Message) {
     Write-Host "[INFO] $Message"
 }
@@ -76,6 +79,56 @@ function Get-Config {
 function Save-Config([object]$Config) {
     Ensure-State
     $Config | ConvertTo-Json -Depth 8 | Set-Content -Path $ConfigPath -Encoding UTF8
+}
+
+function Add-OrUpdateKernel([string]$KernelId, [string]$KernelVersion, [string]$KernelPath) {
+    $config = Get-Config
+    $kernels = @()
+    foreach ($kernel in $config.installedKernels) {
+        if ($kernel.id -ne $KernelId) {
+            $kernels += $kernel
+        }
+    }
+    $entry = [pscustomobject]@{
+        id      = $KernelId
+        version = if ($KernelVersion) { $KernelVersion } else { $null }
+        path    = $KernelPath
+    }
+    $kernels += $entry
+    $config.installedKernels = $kernels
+    if ([string]::IsNullOrEmpty($config.defaultKernel)) {
+        $config.defaultKernel = $KernelId
+    }
+    Save-Config $config
+}
+
+function Remove-KernelEntry([string]$KernelId) {
+    $config = Get-Config
+    $kernels = @()
+    foreach ($kernel in $config.installedKernels) {
+        if ($kernel.id -ne $KernelId) {
+            $kernels += $kernel
+        }
+    }
+    $config.installedKernels = $kernels
+    if ($config.defaultKernel -eq $KernelId) {
+        if ($kernels.Length -gt 0) {
+            $config.defaultKernel = $kernels[0].id
+        }
+        else {
+            $config.defaultKernel = $null
+        }
+    }
+    Save-Config $config
+}
+
+function Get-KernelPath([object]$Config, [string]$KernelId) {
+    foreach ($kernel in $Config.installedKernels) {
+        if ($kernel.id -eq $KernelId) {
+            return $kernel.path
+        }
+    }
+    return $null
 }
 
 function Touch-UpdateStamp {
@@ -157,6 +210,18 @@ function Kernel-Exists([object]$Config, [string]$KernelId) {
     return $false
 }
 
+function Clear-QuarantineIfNeeded([string]$Path) {
+    if (-not (Test-Path $Path)) { return }
+    if ($IsMacOS -and (Get-Command xattr -ErrorAction SilentlyContinue)) {
+        try {
+            & xattr -cr -- $Path 2>$null
+        }
+        catch {
+            Write-Warn ("Failed to clear quarantine on {0}" -f $Path)
+        }
+    }
+}
+
 function Get-Version {
     Ensure-State
     $localVersion = if (Test-Path $VersionFile) {
@@ -215,6 +280,8 @@ Usage: lcod <command> [options]
 Commands:
   version               Print the currently installed CLI version.
   kernel ls             List available kernels from the local manifest.
+  kernel install <id>   Install or update a kernel from a local path.
+  kernel remove <id>    Remove a kernel from the manifest.
   kernel default <id>   Set the default kernel.
   cache clean           Clear cached artefacts.
   self-update           Force immediate update check (placeholder).
@@ -222,6 +289,113 @@ Commands:
 
 Most commands are still placeholders until installation logic lands.
 "@
+}
+
+function Kernel-Install([string[]]$Args) {
+    if ($Args.Length -lt 2) {
+        Write-ErrorMessage "Usage: lcod kernel install <kernel-id> --path <binary> [--version <version>] [--force]"
+        exit 1
+    }
+
+    $kernelId = $Args[1]
+    $sourcePath = $null
+    $kernelVersion = $null
+    $force = $false
+
+    for ($i = 2; $i -lt $Args.Length; $i++) {
+        switch ($Args[$i]) {
+            "--path" {
+                if ($i + 1 -ge $Args.Length) {
+                    Write-ErrorMessage "--path requires a value."
+                    exit 1
+                }
+                $sourcePath = $Args[$i + 1]
+                $i++
+            }
+            "--version" {
+                if ($i + 1 -ge $Args.Length) {
+                    Write-ErrorMessage "--version requires a value."
+                    exit 1
+                }
+                $kernelVersion = $Args[$i + 1]
+                $i++
+            }
+            "--force" {
+                $force = $true
+            }
+            "-h" { Write-Info "Usage: lcod kernel install <kernel-id> --path <binary> [--version <version>] [--force]"; return }
+            "--help" { Write-Info "Usage: lcod kernel install <kernel-id> --path <binary> [--version <version>] [--force]"; return }
+            default {
+                Write-ErrorMessage ("Unknown option '{0}' for kernel install." -f $Args[$i])
+                exit 1
+            }
+        }
+    }
+
+    if (-not $sourcePath) {
+        Write-ErrorMessage "--path is required for kernel install."
+        exit 1
+    }
+
+    if (-not (Test-Path $sourcePath)) {
+        Write-ErrorMessage ("Source binary not found at {0}" -f $sourcePath)
+        exit 1
+    }
+
+    Ensure-State
+
+    $destination = Join-Path $BinDir $kernelId
+    if ((Test-Path $destination) -and -not $force) {
+        Write-ErrorMessage ("Kernel '{0}' already installed at {1} (use --force to overwrite)." -f $kernelId, $destination)
+        exit 1
+    }
+
+    Copy-Item -LiteralPath $sourcePath -Destination $destination -Force
+
+    if (-not $IsWindows) {
+        try {
+            & chmod +x $destination 2>$null
+        }
+        catch { }
+    }
+
+    Clear-QuarantineIfNeeded $destination
+    Add-OrUpdateKernel -KernelId $kernelId -KernelVersion $kernelVersion -KernelPath $destination
+
+    Write-Info ("Kernel '{0}' installed at {1}" -f $kernelId, $destination)
+    if ($kernelVersion) {
+        Write-Info ("Recorded version {0}" -f $kernelVersion)
+    }
+}
+
+function Kernel-Remove([string[]]$Args) {
+    if ($Args.Length -lt 2) {
+        Write-ErrorMessage "Usage: lcod kernel remove <kernel-id>"
+        exit 1
+    }
+
+    $kernelId = $Args[1]
+    Ensure-State
+    $config = Get-Config
+
+    if (-not (Kernel-Exists $config $kernelId)) {
+        Write-Warn ("Kernel '{0}' not registered; nothing to remove." -f $kernelId)
+        return
+    }
+
+    $existingPath = Get-KernelPath $config $kernelId
+    if ($existingPath -and (Test-Path $existingPath)) {
+        if ($existingPath.StartsWith($BinDir)) {
+            Remove-Item -LiteralPath $existingPath -Force
+            Write-Info ("Removed binary {0}" -f $existingPath)
+        }
+        else {
+            Write-Warn ("Skipping deletion of {0} (outside managed bin directory)." -f $existingPath)
+        }
+    }
+
+    Remove-KernelEntry -KernelId $kernelId
+    Write-Info ("Kernel '{0}' removed from manifest." -f $kernelId)
 }
 
 Ensure-State
@@ -264,6 +438,8 @@ switch ($Command) {
                 Save-Config $config
                 Write-Info ("Default kernel set to '{0}'." -f $kernelId)
             }
+            "install" { Kernel-Install $Args }
+            { $_ -in @("remove", "rm", "delete") } { Kernel-Remove $Args }
             default {
                 Write-ErrorMessage ("Unknown kernel subcommand '{0}'." -f $Args[0])
                 exit 1

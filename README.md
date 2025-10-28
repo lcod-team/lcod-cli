@@ -5,7 +5,7 @@ Command-line tooling for installing and interacting with LCOD kernels. The CLI w
 ## Highlights (planned)
 
 - One-line installation (`curl … | bash` / `Invoke-WebRequest … | iex`) with automatic self-update.
-- Kernel management commands: list, download, set default, delete.
+- Kernel management commands: list, install/update from local binaries, set default, remove.
 - Cache maintenance helpers (`lcod cache clean`, `lcod cache status`).
 - Runtime wrapper (`lcod run <compose-or-component> --kernel <id> --set key=value`) that normalises environment variables, logging, and exit codes.
 - Hooks for benchmarking and diagnostics after releases.
@@ -43,6 +43,13 @@ The CLI is intentionally thin. Most responsibilities live in `lcod-release` (ver
 
    ```
    pwsh -File powershell/lcod.ps1 --help
+   ```
+
+4. Install a local kernel binary (temporary workflow until releases are wired):
+
+   ```
+   ./scripts/lcod kernel install my-kernel --path /path/to/lcod-run --version 0.1.12
+   ./scripts/lcod kernel ls
    ```
 
 ## Roadmap

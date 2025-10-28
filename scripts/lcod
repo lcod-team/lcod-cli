@@ -20,6 +20,8 @@ Usage: lcod <command> [options]
 Commands:
   version               Print the currently installed CLI version.
   kernel ls             List available kernels from the local manifest.
+  kernel install <id>   Install or update a kernel from a local path.
+  kernel remove <id>    Remove a kernel from the manifest.
   kernel default <id>   Set the default kernel.
   cache clean           Remove cached artefacts.
   self-update           Force immediate update check.
@@ -111,6 +113,105 @@ cmd_kernel_default() {
   log_info "Default kernel set to '${kernel_id}'."
 }
 
+cmd_kernel_install() {
+  local kernel_id="${1:-}"
+  shift || true
+
+  if [[ -z "${kernel_id}" ]]; then
+    log_error "Usage: lcod kernel install <kernel-id> --path <binary> [--version <version>] [--force]"
+    exit 1
+  fi
+
+  local source_path=""
+  local version=""
+  local force="false"
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --path)
+        source_path="${2:-}"
+        shift 2 || true
+        ;;
+      --version)
+        version="${2:-}"
+        shift 2 || true
+        ;;
+      --force)
+        force="true"
+        shift
+        ;;
+      -h|--help)
+        log_info "Usage: lcod kernel install <kernel-id> --path <binary> [--version <version>] [--force]"
+        return 0
+        ;;
+      *)
+        log_error "Unknown option for kernel install: $1"
+        exit 1
+        ;;
+    esac
+  done
+
+  if [[ -z "${source_path}" ]]; then
+    log_error "--path is required for kernel install"
+    exit 1
+  fi
+
+  if [[ ! -f "${source_path}" ]]; then
+    log_error "Source binary not found at ${source_path}"
+    exit 1
+  fi
+
+  ensure_environment
+
+  local destination="${LCOD_BIN_DIR}/${kernel_id}"
+  if [[ -f "${destination}" && "${force}" != "true" ]]; then
+    log_error "Kernel '${kernel_id}' already installed at ${destination} (use --force to overwrite)"
+    exit 1
+  fi
+
+  mkdir -p "${LCOD_BIN_DIR}"
+  cp "${source_path}" "${destination}"
+  chmod +x "${destination}"
+  clear_quarantine_if_needed "${destination}"
+
+  config_add_or_update_kernel "${kernel_id}" "${version}" "${destination}"
+
+  log_info "Kernel '${kernel_id}' installed at ${destination}"
+  if [[ -n "${version}" ]]; then
+    log_info "Recorded version ${version}"
+  fi
+}
+
+cmd_kernel_remove() {
+  local kernel_id="${1:-}"
+  if [[ -z "${kernel_id}" ]]; then
+    log_error "Usage: lcod kernel remove <kernel-id>"
+    exit 1
+  fi
+
+  ensure_environment
+
+  if ! config_kernel_exists "${kernel_id}"; then
+    log_warn "Kernel '${kernel_id}' not registered; nothing to remove."
+    return 0
+  fi
+
+  local existing_path
+  existing_path=$(config_get_kernel_path "${kernel_id}")
+
+  if [[ -n "${existing_path}" && -f "${existing_path}" ]]; then
+    if [[ "${existing_path}" == "${LCOD_BIN_DIR}/"* ]]; then
+      rm -f "${existing_path}"
+      log_info "Removed binary ${existing_path}"
+    else
+      log_warn "Skipping deletion of ${existing_path} (outside managed bin directory)."
+    fi
+  fi
+
+  config_remove_kernel "${kernel_id}"
+  log_info "Kernel '${kernel_id}' removed from manifest."
+}
+
 cmd_cache_clean() {
   ensure_environment
   if [[ -d "${LCOD_CACHE_DIR}" ]]; then
@@ -146,6 +247,12 @@ main() {
       case "${sub}" in
         ls)
           cmd_kernel_ls "$@"
+          ;;
+        install)
+          cmd_kernel_install "$@"
+          ;;
+        remove|rm|delete)
+          cmd_kernel_remove "$@"
           ;;
         default)
           cmd_kernel_default "$@"
