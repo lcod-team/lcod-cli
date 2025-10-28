@@ -246,7 +246,7 @@ function Invoke-CliAutoUpdate {
 
     $scriptPath = $MyInvocation.MyCommand.Path
     $tmp = [System.IO.Path]::GetTempFileName()
-    $cliUrl = if ($env:LCOD_CLI_SCRIPT_URL) { $env:LCOD_CLI_SCRIPT_URL } else { "https://raw.githubusercontent.com/lcod-team/lcod-cli/main/scripts/lcod" }
+    $cliUrl = if ($env:LCOD_CLI_SCRIPT_URL) { $env:LCOD_CLI_SCRIPT_URL } else { "https://raw.githubusercontent.com/lcod-team/lcod-cli/main/dist/lcod" }
 
     try {
         $remoteVersion = Fetch-LatestVersion -Repo 'lcod-team/lcod-cli'
