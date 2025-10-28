@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # shellcheck shell=bash
 
-set -euo pipefail
+set -eo pipefail
 
 LCOD_STATE_DIR="${LCOD_STATE_DIR:-${HOME}/.lcod}"
 LCOD_BIN_DIR="${LCOD_BIN_DIR:-${LCOD_STATE_DIR}/bin}"
@@ -79,30 +79,31 @@ fetch_latest_runtime_version() {
 }
 
 detect_platform() {
-  local os="" arch=""
+  local os=""
+  local machine_arch=""
   os=$(uname -s | tr '[:upper:]' '[:lower:]')
-  arch=$(uname -m)
+  machine_arch=$(uname -m)
 
   case "${os}" in
     linux)
-      case "${arch}" in
+      case "${machine_arch:-}" in
         x86_64|amd64) echo "linux-x86_64" ;;
         aarch64|arm64) echo "linux-arm64" ;;
-        *) log_error "Unsupported Linux architecture: ${arch}"; return 1 ;;
+        *) log_error "Unsupported Linux architecture: ${machine_arch:-unknown}"; return 1 ;;
       esac
       ;;
     darwin)
-      case "${arch}" in
+      case "${machine_arch:-}" in
         x86_64|amd64) echo "macos-x86_64" ;;
         arm64) echo "macos-arm64" ;;
-        *) log_error "Unsupported macOS architecture: ${arch}"; return 1 ;;
+        *) log_error "Unsupported macOS architecture: ${machine_arch:-unknown}"; return 1 ;;
       esac
       ;;
     msys*|mingw*|cygwin*)
-      case "${arch}" in
+      case "${machine_arch:-}" in
         x86_64|amd64) echo "windows-x86_64" ;;
         arm64) echo "windows-arm64" ;;
-        *) log_error "Unsupported Windows architecture: ${arch}"; return 1 ;;
+        *) log_error "Unsupported Windows architecture: ${machine_arch:-unknown}"; return 1 ;;
       esac
       ;;
     *)
