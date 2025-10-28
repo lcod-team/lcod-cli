@@ -1,0 +1,183 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+COMMON_LIB="${SCRIPT_DIR}/lib/common.sh"
+
+if [[ -f "${COMMON_LIB}" ]]; then
+  # shellcheck source=lib/common.sh
+  source "${COMMON_LIB}"
+else
+  echo "common library not found at ${COMMON_LIB}" >&2
+  exit 1
+fi
+
+print_help() {
+  cat <<'EOF'
+Usage: lcod <command> [options]
+
+Commands:
+  version               Print the currently installed CLI version.
+  kernel ls             List available kernels from the local manifest.
+  kernel default <id>   Set the default kernel.
+  cache clean           Remove cached artefacts.
+  self-update           Force immediate update check.
+  help                  Show this message.
+
+This is an early prototype. Most commands are placeholders until the backend scripts land.
+EOF
+}
+
+cmd_version() {
+  ensure_environment
+  local version_file="${ROOT_DIR}/VERSION"
+  local local_version="dev"
+  if [[ -f "${version_file}" ]]; then
+    local_version="$(<"${version_file}")"
+  fi
+
+  local remote_version=""
+  local fetch_failed="false"
+  local fetched="false"
+  if needs_update 1; then
+    if remote_version=$(update_version_cache); then
+      fetched="true"
+    else
+      fetch_failed="true"
+      remote_version=""
+    fi
+  fi
+
+  if [[ -z "${remote_version}" ]]; then
+    remote_version=$(get_cached_remote_version)
+  fi
+
+  echo "CLI version: ${local_version}"
+  if [[ -n "${remote_version}" ]]; then
+    local status="up to date"
+    if [[ "${remote_version}" != "${local_version}" ]]; then
+      status="update available"
+    fi
+    local fetched_at
+    fetched_at=$(get_cached_version_timestamp)
+    if [[ -n "${fetched_at}" ]]; then
+      echo "Upstream release: ${remote_version} (${status}, checked ${fetched_at})"
+    else
+      echo "Upstream release: ${remote_version} (${status})"
+    fi
+    if [[ "${fetched}" == "true" ]]; then
+      log_info "Fetched latest release information (${remote_version})."
+    fi
+  else
+    if [[ "${fetch_failed}" == "true" ]]; then
+      log_warn "Could not refresh latest release information."
+    else
+      log_warn "No upstream release information cached yet."
+    fi
+  fi
+}
+
+cmd_kernel_ls() {
+  ensure_environment
+  local count
+  count=$(jq '.installedKernels | length' "${LCOD_CONFIG}")
+  if [[ "${count}" -eq 0 ]]; then
+    log_info "No kernels installed yet."
+    log_info "Use 'lcod kernel install <id>' once the command is available."
+    return
+  fi
+
+  local default_id
+  default_id=$(config_get_default_kernel)
+  printf 'ID\tVersion\tPath\tDefault\n'
+  jq -r --arg default "${default_id}" '
+    .installedKernels[]
+    | "\(.id // "-")\t\(.version // "n/a")\t\(.path // "-")\t" + (if .id == $default and $default != "" then "yes" else "no" end)
+  ' "${LCOD_CONFIG}"
+}
+
+cmd_kernel_default() {
+  local kernel_id="${1:-}"
+  if [[ -z "${kernel_id}" ]]; then
+    log_error "Usage: lcod kernel default <kernel-id>"
+    exit 1
+  fi
+  ensure_environment
+  if ! config_kernel_exists "${kernel_id}"; then
+    log_warn "Kernel '${kernel_id}' not found in manifest; recording default anyway."
+  fi
+  config_set_default_kernel "${kernel_id}"
+  log_info "Default kernel set to '${kernel_id}'."
+}
+
+cmd_cache_clean() {
+  ensure_environment
+  if [[ -d "${LCOD_CACHE_DIR}" ]]; then
+    rm -rf "${LCOD_CACHE_DIR:?}/"*
+    log_info "Cache cleared."
+  else
+    log_info "Cache directory not present."
+  fi
+}
+
+cmd_self_update() {
+  ensure_environment
+  log_info "Self-update placeholder. Will download latest release in future iteration."
+  touch_update_stamp
+}
+
+main() {
+  ensure_environment
+
+  local cmd="${1:-help}"
+  shift || true
+
+  case "${cmd}" in
+    help|-h|--help)
+      print_help
+      ;;
+    version)
+      cmd_version "$@"
+      ;;
+    kernel)
+      local sub="${1:-}"
+      shift || true
+      case "${sub}" in
+        ls)
+          cmd_kernel_ls "$@"
+          ;;
+        default)
+          cmd_kernel_default "$@"
+          ;;
+        *)
+          log_error "Unknown kernel subcommand '${sub}'"
+          exit 1
+          ;;
+      esac
+      ;;
+    cache)
+      local sub="${1:-}"
+      shift || true
+      case "${sub}" in
+        clean)
+          cmd_cache_clean "$@"
+          ;;
+        *)
+          log_error "Unknown cache subcommand '${sub}'"
+          exit 1
+          ;;
+      esac
+      ;;
+    self-update)
+      cmd_self_update "$@"
+      ;;
+    *)
+      log_error "Unknown command '${cmd}'"
+      print_help
+      exit 1
+      ;;
+  esac
+}
+
+main "$@"
