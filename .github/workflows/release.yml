@@ -1,0 +1,39 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build bundled script
+        run: ./scripts/build-bundle.sh
+
+      - name: Prepare release artefacts
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/v}"
+          echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
+          STAGING="$(mktemp -d)"
+          cp dist/lcod "${STAGING}/lcod"
+          cp scripts/install.sh "${STAGING}/install.sh"
+          cp powershell/install.ps1 "${STAGING}/install.ps1"
+          chmod +x "${STAGING}/lcod"
+          tar -czf "dist/lcod-cli-${VERSION}.tar.gz" -C "${STAGING}" .
+          (cd "${STAGING}" && zip -r "${GITHUB_WORKSPACE}/dist/lcod-cli-${VERSION}.zip" .)
+          rm -rf "${STAGING}"
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/lcod-cli-${{ env.VERSION }}.tar.gz
+            dist/lcod-cli-${{ env.VERSION }}.zip
