@@ -823,7 +823,10 @@ function Kernel-Install([string[]]$Args) {
                     exit 1
                 }
 
-                $runtimeManifest = Get-ChildItem -Path $tempDir -Recurse -Filter manifest.json -File | Select-Object -First 1
+                $runtimeManifest = Get-ChildItem -Path $tempDir -Recurse -Filter manifest.jsonl -File | Select-Object -First 1
+                if (-not $runtimeManifest) {
+                    $runtimeManifest = Get-ChildItem -Path $tempDir -Recurse -Filter manifest.json -File | Select-Object -First 1
+                }
                 if (-not $runtimeManifest) {
                     if ($tempDir) { Remove-Item -Recurse -Force $tempDir }
                     Write-ErrorMessage "Downloaded runtime archive does not contain a manifest (lcod-kernel-js-runtime)."

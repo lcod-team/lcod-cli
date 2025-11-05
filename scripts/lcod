@@ -808,7 +808,7 @@ cmd_kernel_install() {
           exit 1
         fi
         local runtime_manifest
-        runtime_manifest=$(find "${cleanup_dir}" -maxdepth 4 -type f -name 'manifest.json' | head -n1 || true)
+        runtime_manifest=$(find "${cleanup_dir}" -maxdepth 4 -type f \( -name 'manifest.jsonl' -o -name 'manifest.json' \) | head -n1 || true)
         if [[ -z "${runtime_manifest}" ]]; then
           rm -rf "${cleanup_dir}"
           log_error "Downloaded runtime archive does not contain a manifest (lcod-kernel-js-runtime)."
