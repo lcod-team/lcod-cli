@@ -525,7 +525,7 @@ cmd_kernel_install() {
           exit 1
         fi
         tag="lcod-run-v${version}"
-        asset_name="lcod-run-${version}-${release_platform}.${extension}"
+        asset_name="lcod-run-${release_platform}.${extension}"
         asset_url="https://github.com/${release_repo}/releases/download/${tag}/${asset_name}"
         ;;
       node|js)
