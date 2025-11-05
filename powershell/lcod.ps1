@@ -688,6 +688,62 @@ function Kernel-Install([string[]]$Args) {
     Write-KernelCache $kernelId $kernelVersion $timestamp
 }
 
+function Get-KernelType([string]$Path) {
+    if (-not $Path) { return "native" }
+    $lower = $Path.ToLowerInvariant()
+    if ($lower.EndsWith(".jar")) { return "java" }
+    switch -Wildcard ($lower) {
+        "*.cmd" { return "node" }
+        "*.bat" { return "node" }
+        "*.ps1" { return "node" }
+        "*.mjs" { return "node" }
+        "*.cjs" { return "node" }
+        "*.js"  { return "node" }
+        "*.exe" { return "native" }
+    }
+    try {
+        $firstLine = Get-Content -LiteralPath $Path -TotalCount 1 -ErrorAction Stop
+        if ($firstLine -match '^\#!/') { return "node" }
+    }
+    catch { }
+    return "native"
+}
+
+function Convert-KeyValuePairsToJson([string[]]$Pairs) {
+    if (-not $Pairs -or $Pairs.Count -eq 0) { return $null }
+    $map = [ordered]@{}
+    foreach ($pair in $Pairs) {
+        if (-not $pair.Contains("=")) {
+            return $null
+        }
+        $split = $pair.Split("=", 2)
+        $key = $split[0]
+        $raw = $split[1]
+        $trimmed = $raw.Trim()
+        if ($trimmed -match '^\{|\[') {
+            try {
+                $map[$key] = $trimmed | ConvertFrom-Json -ErrorAction Stop
+                continue
+            }
+            catch { }
+        }
+        if ($trimmed -match '^(true|false|null|\-?\d+(\.\d+)?)$') {
+            try {
+                $map[$key] = $trimmed | ConvertFrom-Json -ErrorAction Stop
+                continue
+            }
+            catch { }
+        }
+        $map[$key] = $raw
+    }
+    return ($map | ConvertTo-Json -Depth 10 -Compress)
+}
+
+function Requires-FlagValue([string]$Flag) {
+    $flags = @('--compose','-c','--state','-s','--modules','-m','--bind','-b','--project','--config','--output','--cache-dir','--sources','--timeout','--log-level','--input','--kernel')
+    return $flags -contains $Flag
+}
+
 function Run-Kernel([string[]]$Args) {
     Ensure-State
     $kernelId = $null
@@ -743,6 +799,98 @@ function Run-Kernel([string[]]$Args) {
         Write-ErrorMessage ("Kernel binary for '{0}' not found at {1}." -f $kernelId, $kernelPath)
         exit 1
     }
+
+    $kernelType = Get-KernelType $kernelPath
+
+    $hasComposeFlag = $false
+    foreach ($arg in $forward) {
+        if ($arg -eq "--compose" -or $arg -eq "-c") {
+            $hasComposeFlag = $true
+            break
+        }
+    }
+
+    $composeValue = $null
+    $kvPairs = New-Object System.Collections.Generic.List[string]
+    $remaining = New-Object System.Collections.Generic.List[string]
+    $afterDelim = $false
+    $expectComposeValue = $false
+    $expectFlagValue = $false
+
+    foreach ($arg in $forward) {
+        if ($afterDelim) {
+            $remaining.Add($arg)
+            continue
+        }
+        if ($expectComposeValue) {
+            $remaining.Add($arg)
+            $expectComposeValue = $false
+            continue
+        }
+        if ($expectFlagValue) {
+            $remaining.Add($arg)
+            $expectFlagValue = $false
+            continue
+        }
+        switch ($arg) {
+            "--" {
+                $afterDelim = $true
+                $remaining.Add($arg)
+                continue
+            }
+            "--compose" {
+                $remaining.Add($arg)
+                $expectComposeValue = $true
+                continue
+            }
+            "-c" {
+                $remaining.Add($arg)
+                $expectComposeValue = $true
+                continue
+            }
+        }
+        if ($arg.StartsWith("-")) {
+            $remaining.Add($arg)
+            if (Requires-FlagValue($arg)) {
+                $expectFlagValue = $true
+            }
+            continue
+        }
+        if (-not $hasComposeFlag -and -not $composeValue) {
+            $composeValue = $arg
+            continue
+        }
+        if (-not $hasComposeFlag -and $arg.Contains("=")) {
+            $kvPairs.Add($arg)
+            continue
+        }
+        $remaining.Add($arg)
+    }
+
+    $inlineJson = $null
+    if ($kvPairs.Count -gt 0) {
+        $inlineJson = Convert-KeyValuePairsToJson $kvPairs.ToArray()
+        if (-not $inlineJson) {
+            Write-Warn "Unable to parse inline arguments into JSON; forwarding raw values."
+            foreach ($pair in $kvPairs) { $remaining.Add($pair) }
+            $inlineJson = $null
+        }
+    }
+
+    $finalArgs = New-Object System.Collections.Generic.List[string]
+    if ($composeValue) {
+        $finalArgs.Add("--compose")
+        $finalArgs.Add($composeValue)
+    }
+    if ($inlineJson) {
+        $flag = if ($kernelType -eq "node") { "--state" } else { "--input" }
+        $finalArgs.Add($flag)
+        $finalArgs.Add($inlineJson)
+    }
+    if ($remaining.Count -gt 0) {
+        $finalArgs.AddRange($remaining)
+    }
+    $forward = $finalArgs.ToArray()
 
     $command = $null
     $cmdArgs = @()

@@ -385,6 +385,95 @@ auto_update_interval() {
   fi
 }
 
+detect_kernel_type() {
+  local kernel_path="${1:?kernel path required}"
+  if [[ "${kernel_path}" == *.jar ]]; then
+    printf '%s\n' "java"
+    return
+  fi
+  case "${kernel_path}" in
+    *.cmd|*.bat|*.ps1|*.mjs|*.cjs|*.js)
+      printf '%s\n' "node"
+      return
+      ;;
+    *.exe)
+      printf '%s\n' "native"
+      return
+      ;;
+  esac
+  if head -c 2 "${kernel_path}" 2>/dev/null | grep -q '^#!'; then
+    printf '%s\n' "node"
+    return
+  fi
+  printf '%s\n' "native"
+}
+
+build_inline_json() {
+  if [[ $# -eq 0 ]]; then
+    return 1
+  fi
+  local json
+  if command -v python3 >/dev/null 2>&1; then
+    if json=$(python3 - "$@" <<'PY'
+import json
+import sys
+
+pairs = sys.argv[1:]
+result = {}
+for item in pairs:
+    if '=' not in item:
+        raise SystemExit(1)
+    key, value = item.split('=', 1)
+    value = value.strip()
+    if value in ('true', 'false'):
+        result[key] = (value == 'true')
+        continue
+    try:
+        result[key] = json.loads(value)
+        continue
+    except json.JSONDecodeError:
+        pass
+    result[key] = value
+print(json.dumps(result, separators=(',', ':')))
+PY
+); then
+      printf '%s' "${json}"
+      return 0
+    fi
+  fi
+  local first=1
+  local out="{"
+  local pair key value escaped
+  for pair in "$@"; do
+    if [[ "${pair}" != *=* ]]; then
+      return 1
+    fi
+    key=${pair%%=*}
+    value=${pair#*=}
+    escaped=${value//\\/\\\\}
+    escaped=${escaped//\"/\\\"}
+    if [[ ${first} -eq 0 ]]; then
+      out+=','
+    fi
+    first=0
+    out+="\"${key}\":\"${escaped}\""
+  done
+  out+='}'
+  printf '%s' "${out}"
+  return 0
+}
+
+flag_requires_value() {
+  case "$1" in
+    --compose|-c|--state|-s|--modules|-m|--bind|-b|--project|--config|--output|--cache-dir|--sources|--timeout|--log-level|--input|--kernel)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
 # ---- CLI bootstrap ----
 SCRIPT_PATH="${BASH_SOURCE[0]}"
 if [[ -z "${SCRIPT_PATH}" ]]; then
@@ -858,6 +947,92 @@ EOF
     log_error "Kernel binary for '${kernel_id}' not found at ${kernel_path}."
     exit 1
   fi
+
+  local kernel_type
+  kernel_type=$(detect_kernel_type "${kernel_path}")
+
+  local has_compose_flag=0
+  for arg in "${args[@]}"; do
+    if [[ "${arg}" == "--compose" || "${arg}" == "-c" ]]; then
+      has_compose_flag=1
+      break
+    fi
+  done
+
+  local compose_value=""
+  local kv_pairs=()
+  local forwarded=()
+  local after_delim=0
+  local expect_compose_value=0
+  local expect_flag_value=0
+
+  for arg in "${args[@]}"; do
+    if [[ ${after_delim} -eq 1 ]]; then
+      forwarded+=("${arg}")
+      continue
+    fi
+    if [[ ${expect_compose_value} -eq 1 ]]; then
+      forwarded+=("${arg}")
+      expect_compose_value=0
+      continue
+    fi
+    if [[ ${expect_flag_value} -eq 1 ]]; then
+      forwarded+=("${arg}")
+      expect_flag_value=0
+      continue
+    fi
+    case "${arg}" in
+      --)
+        after_delim=1
+        forwarded+=("${arg}")
+        ;;
+      --compose|-c)
+        forwarded+=("${arg}")
+        expect_compose_value=1
+        ;;
+      -*)
+        forwarded+=("${arg}")
+        if flag_requires_value "${arg}"; then
+          expect_flag_value=1
+        fi
+        ;;
+      *)
+        if [[ ${has_compose_flag} -eq 0 && -z "${compose_value}" ]]; then
+          compose_value="${arg}"
+        elif [[ ${has_compose_flag} -eq 0 && "${arg}" == *=* ]]; then
+          kv_pairs+=("${arg}")
+        else
+          forwarded+=("${arg}")
+        fi
+        ;;
+    esac
+  done
+
+  local inline_json=""
+  if [[ ${#kv_pairs[@]} -gt 0 ]]; then
+    if ! inline_json=$(build_inline_json "${kv_pairs[@]}"); then
+      log_warn "Unable to parse inline arguments into JSON; forwarding raw values."
+      forwarded+=("${kv_pairs[@]}")
+      inline_json=""
+    fi
+  fi
+
+  local transformed=()
+  if [[ -n "${compose_value}" ]]; then
+    transformed+=("--compose" "${compose_value}")
+  fi
+  if [[ -n "${inline_json}" ]]; then
+    case "${kernel_type}" in
+      node)
+        transformed+=("--state" "${inline_json}")
+        ;;
+      *)
+        transformed+=("--input" "${inline_json}")
+        ;;
+    esac
+  fi
+
+  args=("${transformed[@]}" "${forwarded[@]}")
 
   local cmd
   local forward=()

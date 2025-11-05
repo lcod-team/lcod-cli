@@ -80,11 +80,17 @@ The CLI checks for updates (itself and the installed kernels) every 24 hours by 
 5. Execute composes via the default runtime:
 
    ```
-   # forward arguments to lcod-run (e.g. --compose, --input, ...)
+   # resolve a remote component identifier and pass inline parameters
+   lcod run lcod://tooling/json/decode_object@0.1.0 text='{"ok":true}'
+
+   # run a local compose file (key=value pairs become JSON input)
+   lcod run examples/compose.yaml user=alice retries=3
+
+   # still possible to forward flags verbatim
    lcod run -- --compose path/to/compose.yaml --input input.json
 
    # pick an explicit kernel when multiple runtimes are installed
-   lcod run --kernel node -- --compose demo.yaml
+   lcod run --kernel node lcod://demo/app@0.1.0 env=dev
    ```
 
 ## Roadmap
