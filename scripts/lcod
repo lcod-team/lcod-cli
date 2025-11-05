@@ -176,6 +176,17 @@ auto_update_kernel_if_needed() {
 
 detect_kernel_type() {
   local kernel_path="${1:?kernel path required}"
+  local kernel_id="${2:-}"
+  case "${kernel_id}" in
+    node|js)
+      printf '%s\n' "node"
+      return
+      ;;
+    java|jvm)
+      printf '%s\n' "java"
+      return
+      ;;
+  esac
   if [[ "${kernel_path}" == *.jar ]]; then
     printf '%s\n' "java"
     return
@@ -191,10 +202,70 @@ detect_kernel_type() {
       ;;
   esac
   if head -c 2 "${kernel_path}" 2>/dev/null | grep -q '^#!'; then
-    printf '%s\n' "node"
+    printf '%s\n' "native"
     return
   fi
   printf '%s\n' "native"
+}
+
+process_kernel_output() {
+  local stdout_file="${1:?stdout file required}"
+  local stderr_file="${2:?stderr file required}"
+  if [[ -s "${stderr_file}" ]]; then
+    cat "${stderr_file}" >&2
+  fi
+  if command -v python3 >/dev/null 2>&1; then
+    python3 - "${stdout_file}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+try:
+    data = path.read_text(encoding='utf-8')
+except FileNotFoundError:
+    sys.exit(1)
+if not data:
+    sys.exit(1)
+
+decoder = json.JSONDecoder()
+best = None
+idx = 0
+while True:
+    try:
+        start = data.index('{', idx)
+    except ValueError:
+        break
+    try:
+        obj, length = decoder.raw_decode(data[start:])
+    except json.JSONDecodeError:
+        idx = start + 1
+        continue
+    end = start + length
+    if best is None or end > best[2]:
+        best = (obj, start, end)
+    idx = start + 1
+
+if best is None:
+    sys.stderr.write(data)
+    if not data.endswith('\n'):
+        sys.stderr.write('\n')
+    sys.exit(1)
+
+obj, start, end = best
+logs = data[:start] + data[end:]
+if logs:
+    sys.stderr.write(logs)
+    if not logs.endswith('\n'):
+        sys.stderr.write('\n')
+
+json.dump(obj, sys.stdout, indent=2, ensure_ascii=False)
+sys.stdout.write('\n')
+sys.exit(0)
+PY
+    return $?
+  fi
+  return 1
 }
 
 build_inline_json() {
@@ -214,14 +285,27 @@ for item in pairs:
         raise SystemExit(1)
     key, value = item.split('=', 1)
     value = value.strip()
-    if value in ('true', 'false'):
-        result[key] = (value == 'true')
+    lowered = value.lower()
+    if lowered in ('true', 'false'):
+        result[key] = (lowered == 'true')
+        continue
+    if lowered == 'null':
+        result[key] = None
         continue
     try:
-        result[key] = json.loads(value)
+        number = float(value)
+    except ValueError:
+        number = None
+    else:
+        if number.is_integer():
+            number = int(number)
+        result[key] = number
         continue
-    except json.JSONDecodeError:
-        pass
+    prefixes = ('json:', 'JSON:', '@json:', '@JSON:')
+    if value.startswith(prefixes):
+        payload = value.split(':', 1)[1]
+        result[key] = json.loads(payload)
+        continue
     result[key] = value
 print(json.dumps(result, separators=(',', ':')))
 PY
@@ -567,7 +651,7 @@ EOF
   fi
 
   local kernel_type
-  kernel_type=$(detect_kernel_type "${kernel_path}")
+  kernel_type=$(detect_kernel_type "${kernel_path}" "${kernel_id}")
 
   local has_compose_flag=0
   for arg in "${args[@]}"; do
@@ -685,7 +769,16 @@ EOF
     forward+=("${args[@]}")
   fi
 
-  exec "${cmd}" "${forward[@]}"
+  local tmp_stdout tmp_stderr status
+  tmp_stdout=$(mktemp)
+  tmp_stderr=$(mktemp)
+  "${cmd}" "${forward[@]}" >"${tmp_stdout}" 2>"${tmp_stderr}"
+  status=$?
+  if ! process_kernel_output "${tmp_stdout}" "${tmp_stderr}"; then
+    cat "${tmp_stdout}"
+  fi
+  rm -f "${tmp_stdout}" "${tmp_stderr}"
+  return "${status}"
 }
 
 cmd_kernel_remove() {

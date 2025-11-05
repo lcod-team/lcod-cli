@@ -688,7 +688,9 @@ function Kernel-Install([string[]]$Args) {
     Write-KernelCache $kernelId $kernelVersion $timestamp
 }
 
-function Get-KernelType([string]$Path) {
+function Get-KernelType([string]$Path, [string]$KernelId) {
+    if ($KernelId -in @('node','js')) { return 'node' }
+    if ($KernelId -in @('java','jvm')) { return 'java' }
     if (-not $Path) { return "native" }
     $lower = $Path.ToLowerInvariant()
     if ($lower.EndsWith(".jar")) { return "java" }
@@ -720,14 +722,22 @@ function Convert-KeyValuePairsToJson([string[]]$Pairs) {
         $key = $split[0]
         $raw = $split[1]
         $trimmed = $raw.Trim()
-        if ($trimmed -match '^\{|\[') {
+        if ($trimmed -match '^(?i)(json:|@json:).*') {
+            $payload = $trimmed.Substring($trimmed.IndexOf(':') + 1)
+            try {
+                $map[$key] = $payload | ConvertFrom-Json -ErrorAction Stop
+                continue
+            }
+            catch { }
+        }
+        if ($trimmed -match '^(?i)(true|false|null)$') {
             try {
                 $map[$key] = $trimmed | ConvertFrom-Json -ErrorAction Stop
                 continue
             }
             catch { }
         }
-        if ($trimmed -match '^(true|false|null|\-?\d+(\.\d+)?)$') {
+        if ($trimmed -match '^[-+]?[0-9]+(\.[0-9]+)?$') {
             try {
                 $map[$key] = $trimmed | ConvertFrom-Json -ErrorAction Stop
                 continue
@@ -744,6 +754,51 @@ function Requires-FlagValue([string]$Flag) {
     return $flags -contains $Flag
 }
 
+function Invoke-JsonExtraction([string]$Path) {
+    if (-not (Test-Path $Path)) { return $false }
+    $data = Get-Content -LiteralPath $Path -Raw
+    if ([string]::IsNullOrEmpty($data)) { return $false }
+    $candidate = $null
+    for ($pos = 0; $pos -lt $data.Length; $pos++) {
+        if ($data[$pos] -ne "{") { continue }
+        $substring = $data.Substring($pos)
+        try {
+            $doc = [System.Text.Json.JsonDocument]::Parse($substring)
+        }
+        catch { continue }
+        $jsonText = $doc.RootElement.GetRawText()
+        $endPos = $pos + $jsonText.Length
+        if (-not $candidate -or $endPos -gt $candidate.End) {
+            if ($candidate) { $candidate.Doc.Dispose() }
+            $candidate = [pscustomobject]@{ Start = $pos; End = $endPos; JsonText = $jsonText; Doc = $doc }
+        }
+        else {
+            $doc.Dispose()
+        }
+    }
+    if (-not $candidate) { return $false }
+    $start = $candidate.Start
+    $end = $candidate.End
+    $logs = ""
+    if ($start -gt 0) { $logs += $data.Substring(0, $start) }
+    if ($end -lt $data.Length) { $logs += $data.Substring($end) }
+    if (-not [string]::IsNullOrWhiteSpace($logs)) {
+        [Console]::Error.Write($logs)
+        if (-not $logs.EndsWith("`n")) { [Console]::Error.WriteLine() }
+    }
+    $stream = [System.IO.MemoryStream]::new()
+    $options = [System.Text.Json.JsonWriterOptions]::new()
+    $options.Indented = $true
+    $writer = [System.Text.Json.Utf8JsonWriter]::new($stream, $options)
+    $candidate.Doc.RootElement.WriteTo($writer)
+    $writer.Flush()
+    $output = [System.Text.Encoding]::UTF8.GetString($stream.ToArray())
+    Write-Output $output
+    $writer.Dispose()
+    $stream.Dispose()
+    $candidate.Doc.Dispose()
+    return $true
+}
 function Run-Kernel([string[]]$Args) {
     Ensure-State
     $kernelId = $null
@@ -800,7 +855,7 @@ function Run-Kernel([string[]]$Args) {
         exit 1
     }
 
-    $kernelType = Get-KernelType $kernelPath
+    $kernelType = Get-KernelType $kernelPath $kernelId
 
     $hasComposeFlag = $false
     foreach ($arg in $forward) {
@@ -917,8 +972,20 @@ function Run-Kernel([string[]]$Args) {
         $cmdArgs += $forward
     }
 
-    & $command @cmdArgs
-    exit $LASTEXITCODE
+    $stdoutFile = [System.IO.Path]::GetTempFileName()
+    $stderrFile = [System.IO.Path]::GetTempFileName()
+    & $command @cmdArgs 1> $stdoutFile 2> $stderrFile
+    $status = $LASTEXITCODE
+    if ((Get-Item $stderrFile).Length -gt 0) {
+        [Console]::Error.Write((Get-Content -LiteralPath $stderrFile -Raw))
+    }
+    if (-not (Invoke-JsonExtraction $stdoutFile)) {
+        if ((Get-Item $stdoutFile).Length -gt 0) {
+            Get-Content -LiteralPath $stdoutFile
+        }
+    }
+    Remove-Item $stdoutFile, $stderrFile -ErrorAction SilentlyContinue
+    exit $status
 }
 
 function Kernel-Remove([string[]]$Args) {
