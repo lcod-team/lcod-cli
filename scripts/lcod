@@ -690,22 +690,32 @@ cmd_kernel_install() {
         mkdir -p "${kernel_cache_dir}"
         mv "${runtime_root}" "${kernel_cache_dir}/runtime"
         require_command npm "Install Node.js (npm) to set up the Node kernel."
+        local source_cache_dir="${LCOD_CACHE_DIR}/sources/${kernel_id}"
+        mkdir -p "${source_cache_dir}"
+        local source_archive="${source_cache_dir}/${version}.tar.gz"
         local source_archive_url="https://github.com/${release_repo}/archive/refs/tags/${tag}.tar.gz"
-        local source_archive="${kernel_cache_dir}/source-${version}.tar.gz"
-        if ! download_file "${source_archive_url}" "${source_archive}"; then
-          rm -rf "${cleanup_dir}" "${kernel_cache_dir}"
-          log_error "Failed to download Node kernel sources from ${source_archive_url}"
-          exit 1
+        if [[ "${force}" == "true" || ! -f "${source_archive}" ]]; then
+          log_info "Downloading Node kernel sources from ${source_archive_url}"
+          local tmp_source="${source_archive}.tmp"
+          if download_file "${source_archive_url}" "${tmp_source}"; then
+            mv "${tmp_source}" "${source_archive}"
+          else
+            rm -f "${tmp_source}"
+            rm -rf "${cleanup_dir}" "${kernel_cache_dir}"
+            log_error "Failed to download Node kernel sources from ${source_archive_url}"
+            exit 1
+          fi
+        else
+          log_info "Using cached Node kernel sources ${source_archive}"
         fi
         local source_root_dir="${kernel_cache_dir}/source"
         rm -rf "${source_root_dir}"
         mkdir -p "${source_root_dir}"
-        if ! tar -xzf "${source_archive}" -C "${source_root_dir}"; then
+        if ! extract_archive "${source_archive}" "${source_root_dir}"; then
           rm -rf "${cleanup_dir}" "${kernel_cache_dir}"
           log_error "Unable to extract Node kernel sources archive"
           exit 1
         fi
-        rm -f "${source_archive}"
         local node_source_root
         node_source_root=$(find "${source_root_dir}" -mindepth 1 -maxdepth 1 -type d | head -n1 || true)
         if [[ -z "${node_source_root}" ]]; then
