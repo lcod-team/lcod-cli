@@ -168,6 +168,87 @@ function Get-AssetExtension([string]$Platform) {
     return "tar.gz"
 }
 
+function Get-ReleaseManifestRepo {
+    if ($env:LCOD_RELEASE_MANIFEST_REPO) { return $env:LCOD_RELEASE_MANIFEST_REPO }
+    return "lcod-team/lcod-release"
+}
+
+function Get-ManifestCacheDir {
+    return (Join-Path $CacheDir "manifests")
+}
+
+function Get-ReleaseManifest([string]$Version) {
+    $cacheDir = Get-ManifestCacheDir
+    if (-not (Test-Path $cacheDir)) { New-Item -ItemType Directory -Path $cacheDir | Out-Null }
+    $manifestPath = Join-Path $cacheDir ("release-{0}.json" -f $Version)
+    if (Test-Path $manifestPath) { return $manifestPath }
+
+    $repo = Get-ReleaseManifestRepo
+    $url = "https://github.com/$repo/releases/download/v$Version/release-manifest.json"
+    $tmp = "$manifestPath.tmp"
+    try {
+        Invoke-WebRequest -Uri $url -OutFile $tmp -UseBasicParsing -ErrorAction Stop | Out-Null
+        Move-Item -LiteralPath $tmp -Destination $manifestPath -Force
+        return $manifestPath
+    }
+    catch {
+        if (Test-Path $tmp) { Remove-Item -LiteralPath $tmp -Force }
+        return $null
+    }
+}
+
+function Resolve-ManifestAssetUrl([string]$Version, [string]$KernelKey, [string]$AssetName) {
+    $manifest = Get-ReleaseManifest $Version
+    if (-not $manifest) { return $null }
+    try {
+        $json = Get-Content -Path $manifest -Raw -ErrorAction Stop | ConvertFrom-Json
+    }
+    catch { return $null }
+
+    $entry = $json.kernels.$KernelKey
+    if (-not $entry) { return $null }
+    foreach ($asset in $entry.assets) {
+        if ($asset.name -eq $AssetName -and $asset.download_url) {
+            return $asset.download_url
+        }
+    }
+    return $null
+}
+
+function List-ManifestAssets([string]$Version, [string]$KernelKey) {
+    $manifest = Get-ReleaseManifest $Version
+    if (-not $manifest) { return @() }
+    try {
+        $json = Get-Content -Path $manifest -Raw -ErrorAction Stop | ConvertFrom-Json
+    }
+    catch { return @() }
+    $entry = $json.kernels.$KernelKey
+    if (-not $entry) { return @() }
+    return @($entry.assets | ForEach-Object { $_.name })
+}
+
+function Select-ManifestPlatformAsset([string]$Version, [string]$KernelKey, [string[]]$Prefixes) {
+    $manifest = Get-ReleaseManifest $Version
+    if (-not $manifest) { return $null }
+    try {
+        $json = Get-Content -Path $manifest -Raw -ErrorAction Stop | ConvertFrom-Json
+    }
+    catch { return $null }
+    $entry = $json.kernels.$KernelKey
+    if (-not $entry) { return $null }
+    foreach ($asset in $entry.assets) {
+        $name = $asset.name
+        foreach ($prefix in $Prefixes) {
+            if ($name -like "$prefix*") {
+                if ($asset.download_url) {
+                    return [pscustomobject]@{ Name = $name; Url = $asset.download_url }
+                }
+            }
+        }
+    }
+    return $null
+}
+
 function Get-ReleaseAssetUrl([string]$Repo, [string]$Version, [string]$Platform) {
     $ext = Get-AssetExtension $Platform
     return "https://github.com/$Repo/releases/download/lcod-run-v$Version/lcod-run-$Platform.$ext"
@@ -574,6 +655,12 @@ function Kernel-Install([string[]]$Args) {
         }
     }
 
+    Ensure-State
+    $config = Get-Config
+    $existingEntry = $config.installedKernels | Where-Object { $_.id -eq $kernelId } | Select-Object -First 1
+    $existingVersion = if ($existingEntry) { $existingEntry.version } else { $null }
+    $destination = Join-Path $BinDir $kernelId
+
     if (-not $fromRelease -and -not $sourcePath -and $fromReleaseDefault) {
         $fromRelease = $true
     }
@@ -591,22 +678,106 @@ function Kernel-Install([string[]]$Args) {
             }
         }
 
-        if (-not $platformId -or $platformId -eq "auto") {
-            try {
-                $platformId = Get-DetectedPlatform
+        if (-not $force -and $existingVersion -and $existingVersion -eq $kernelVersion) {
+            Write-Info ("Kernel '{0}' already installed at {1} (version {2}). Nothing to do." -f $kernelId, $destination, $existingVersion)
+            return
+        }
+
+        $cacheDir = Join-Path $CacheDir (Join-Path "releases" $kernelVersion)
+        if (-not (Test-Path $cacheDir)) { New-Item -ItemType Directory -Path $cacheDir | Out-Null }
+
+        $assetName = $null
+        $assetUrl = $null
+        $tag = $null
+
+        switch -Regex ($kernelId) {
+            '^(rs|rust)$' {
+                if (-not $platformId -or $platformId -eq "auto") {
+                    try {
+                        $platformId = Get-DetectedPlatform
+                    }
+                    catch {
+                        Write-ErrorMessage $_.Exception.Message
+                        exit 1
+                    }
+                }
+                $selection = Select-ManifestPlatformAsset $kernelVersion "rs" @("lcod-run-$platformId")
+                if ($selection) {
+                    $assetName = $selection.Name
+                    $assetUrl = $selection.Url
+                }
+                if (-not $assetName) {
+                    $extension = Get-AssetExtension $platformId
+                    $assetName = "lcod-run-$platformId.$extension"
+                    $assetUrl = Resolve-ManifestAssetUrl $kernelVersion "rs" $assetName
+                    if (-not $assetUrl) {
+                        $tag = "lcod-run-v$kernelVersion"
+                        $assetUrl = Get-ReleaseAssetUrl $releaseRepo $kernelVersion $platformId
+                        $available = List-ManifestAssets $kernelVersion "rs"
+                        if ($available -and -not $force) {
+                            $list = ($available -join ", ")
+                            Write-ErrorMessage ("No release asset '{0}' found in manifest. Available assets: {1}" -f $assetName, $list)
+                            exit 1
+                        }
+                    }
+                }
+                if (-not $assetUrl) {
+                    $tag = "lcod-run-v$kernelVersion"
+                    $assetUrl = Get-ReleaseAssetUrl $releaseRepo $kernelVersion $platformId
+                }
+                break
             }
-            catch {
-                Write-ErrorMessage $_.Exception.Message
+            '^(node|js)$' {
+                $tag = "v$kernelVersion"
+                $selection = Select-ManifestPlatformAsset $kernelVersion "js" @("lcod-kernel-js-runtime-$kernelVersion", "lcod-kernel-js-runtime")
+                if ($selection) {
+                    $assetName = $selection.Name
+                    $assetUrl = $selection.Url
+                }
+                if (-not $assetName) {
+                    $assetName = "lcod-kernel-js-runtime-$kernelVersion.tar.gz"
+                    $assetUrl = Resolve-ManifestAssetUrl $kernelVersion "js" $assetName
+                    if (-not $assetUrl) {
+                        $available = List-ManifestAssets $kernelVersion "js"
+                        if ($available -and -not $force) {
+                            $list = ($available -join ", ")
+                            Write-ErrorMessage ("Node runtime asset '{0}' missing in manifest. Available assets: {1}" -f $assetName, $list)
+                            exit 1
+                        }
+                        $assetUrl = "https://github.com/$releaseRepo/releases/download/$tag/$assetName"
+                    }
+                }
+                break
+            }
+            '^(java|jvm)$' {
+                $tag = "v$kernelVersion"
+                $selection = Select-ManifestPlatformAsset $kernelVersion "java" @("lcod-run-$kernelVersion")
+                if ($selection) {
+                    $assetName = $selection.Name
+                    $assetUrl = $selection.Url
+                }
+                if (-not $assetName) {
+                    $assetName = "lcod-run-$kernelVersion.jar"
+                    $assetUrl = Resolve-ManifestAssetUrl $kernelVersion "java" $assetName
+                    if (-not $assetUrl) {
+                        $available = List-ManifestAssets $kernelVersion "java"
+                        if ($available -and -not $force) {
+                            $list = ($available -join ", ")
+                            Write-ErrorMessage ("Java runtime asset '{0}' missing in manifest. Available assets: {1}" -f $assetName, $list)
+                            exit 1
+                        }
+                        $assetUrl = "https://github.com/$releaseRepo/releases/download/$tag/$assetName"
+                    }
+                }
+                break
+            }
+            default {
+                Write-ErrorMessage "Kernel '${kernelId}' is not supported for release installation."
                 exit 1
             }
         }
 
-        $extension = Get-AssetExtension $platformId
-        $cacheDir = Join-Path $CacheDir (Join-Path "releases" $kernelVersion)
-        if (-not (Test-Path $cacheDir)) { New-Item -ItemType Directory -Path $cacheDir | Out-Null }
-        $assetName = "lcod-run-$platformId.$extension"
         $assetPath = Join-Path $cacheDir $assetName
-        $assetUrl = Get-ReleaseAssetUrl $releaseRepo $kernelVersion $platformId
 
         if ($force -or -not (Test-Path $assetPath)) {
             Write-Info ("Downloading {0}" -f $assetUrl)
@@ -623,27 +794,148 @@ function Kernel-Install([string[]]$Args) {
         $tempDir = Join-Path ([System.IO.Path]::GetTempPath()) ("lcod-cli-" + [System.Guid]::NewGuid().ToString())
         New-Item -ItemType Directory -Path $tempDir | Out-Null
 
-        try { Extract-Archive $assetPath $tempDir }
-        catch {
-            if ($tempDir) { Remove-Item -Recurse -Force $tempDir }
-            Write-ErrorMessage $_.Exception.Message
-            exit 1
-        }
+        switch -Regex ($kernelId) {
+            '^(rs|rust)$' {
+                try { Extract-Archive $assetPath $tempDir }
+                catch {
+                    if ($tempDir) { Remove-Item -Recurse -Force $tempDir }
+                    Write-ErrorMessage $_.Exception.Message
+                    exit 1
+                }
 
-        $candidate = Get-ChildItem -Path $tempDir -Recurse -File |
-            Where-Object { $_.Name -match '^lcod-run(\.exe)?$' } |
-            Select-Object -First 1
+                $candidate = Get-ChildItem -Path $tempDir -Recurse -File |
+                    Where-Object { $_.Name -match '^lcod-run(\.exe)?$' } |
+                    Select-Object -First 1
 
-        if (-not $candidate) {
-            if ($tempDir) { Remove-Item -Recurse -Force $tempDir }
-            Write-ErrorMessage "Unable to locate lcod-run binary inside the archive."
-            exit 1
+                if (-not $candidate) {
+                    if ($tempDir) { Remove-Item -Recurse -Force $tempDir }
+                    Write-ErrorMessage "Unable to locate lcod-run binary inside the archive."
+                    exit 1
+                }
+                $sourcePath = $candidate.FullName
+                break
+            }
+            '^(node|js)$' {
+                try { Extract-Archive $assetPath $tempDir }
+                catch {
+                    if ($tempDir) { Remove-Item -Recurse -Force $tempDir }
+                    Write-ErrorMessage $_.Exception.Message
+                    exit 1
+                }
+
+                $runtimeManifest = Get-ChildItem -Path $tempDir -Recurse -Filter manifest.json -File | Select-Object -First 1
+                if (-not $runtimeManifest) {
+                    if ($tempDir) { Remove-Item -Recurse -Force $tempDir }
+                    Write-ErrorMessage "Downloaded runtime archive does not contain a manifest (lcod-kernel-js-runtime)."
+                    exit 1
+                }
+                $runtimeRoot = Split-Path -Parent $runtimeManifest.FullName
+                $kernelCacheDir = Join-Path $CacheDir (Join-Path "kernels" (Join-Path $kernelId $kernelVersion))
+                if (Test-Path $kernelCacheDir) { Remove-Item -LiteralPath $kernelCacheDir -Recurse -Force }
+                New-Item -ItemType Directory -Path $kernelCacheDir | Out-Null
+                $runtimeDestination = Join-Path $kernelCacheDir "runtime"
+                Move-Item -LiteralPath $runtimeRoot -Destination $runtimeDestination
+
+                $sourceCacheDir = Join-Path $CacheDir (Join-Path "sources" $kernelId)
+                if (-not (Test-Path $sourceCacheDir)) { New-Item -ItemType Directory -Path $sourceCacheDir | Out-Null }
+                $sourceArchive = Join-Path $sourceCacheDir ("{0}.tar.gz" -f $kernelVersion)
+                $tag = if ($tag) { $tag } else { "v$kernelVersion" }
+                $sourceArchiveUrl = "https://github.com/$releaseRepo/archive/refs/tags/$tag.tar.gz"
+                if ($force -or -not (Test-Path $sourceArchive)) {
+                    Write-Info ("Downloading Node kernel sources from {0}" -f $sourceArchiveUrl)
+                    $tmpSource = "$sourceArchive.tmp"
+                    try {
+                        Download-File $sourceArchiveUrl $tmpSource
+                        Move-Item -LiteralPath $tmpSource -Destination $sourceArchive -Force
+                    }
+                    catch {
+                        if (Test-Path $tmpSource) { Remove-Item -LiteralPath $tmpSource -Force }
+                        if ($tempDir) { Remove-Item -Recurse -Force $tempDir }
+                        Write-ErrorMessage ("Failed to download Node kernel sources from {0}" -f $sourceArchiveUrl)
+                        exit 1
+                    }
+                }
+                else {
+                    Write-Info ("Using cached Node kernel sources {0}" -f $sourceArchive)
+                }
+
+                $sourceRootDir = Join-Path $kernelCacheDir "source"
+                if (Test-Path $sourceRootDir) { Remove-Item -LiteralPath $sourceRootDir -Recurse -Force }
+                New-Item -ItemType Directory -Path $sourceRootDir | Out-Null
+                try { Extract-Archive $sourceArchive $sourceRootDir }
+                catch {
+                    if ($tempDir) { Remove-Item -Recurse -Force $tempDir }
+                    Write-ErrorMessage "Unable to extract Node kernel sources archive"
+                    exit 1
+                }
+
+                $nodeSourceRoot = Get-ChildItem -Path $sourceRootDir -Directory | Select-Object -First 1
+                if (-not $nodeSourceRoot) {
+                    if ($tempDir) { Remove-Item -Recurse -Force $tempDir }
+                    Write-ErrorMessage "Unable to locate Node kernel source directory after extraction"
+                    exit 1
+                }
+
+                Write-Info "Installing Node kernel dependencies via npm"
+                Push-Location $nodeSourceRoot.FullName
+                try {
+                    & npm ci --omit=dev *> $null
+                }
+                catch {
+                    try { & npm install --production *> $null }
+                    catch {
+                        Pop-Location
+                        if ($tempDir) { Remove-Item -Recurse -Force $tempDir }
+                        Write-ErrorMessage "Failed to install Node kernel dependencies"
+                        exit 1
+                    }
+                }
+                Pop-Location
+
+                $wrapperPath = Join-Path $tempDir "lcod-run.ps1"
+                $runtimePath = $runtimeDestination
+                $nodeSourcePath = Join-Path $nodeSourceRoot.FullName "bin/run-compose.mjs"
+                $wrapperContent = @"
+param(
+    [Parameter(ValueFromRemainingArguments = $true)]
+    [string[]]`
+    `$Forward
+)
+
+$env:LCOD_HOME = "${runtimePath}"
+$env:SPEC_REPO_PATH = "${runtimePath}"
+if (-not $env:LCOD_RESOLVER_PATH) {
+    $env:LCOD_RESOLVER_PATH = "${runtimePath}\resolver"
+}
+
+$node = Get-Command node -ErrorAction SilentlyContinue
+if (-not $node) {
+    Write-Error "Node.js is required to run this kernel."
+    exit 1
+}
+
+& $node.Path "${nodeSourcePath}" --core --resolver @Forward
+exit $LASTEXITCODE
+"@
+                Set-Content -Path $wrapperPath -Value $wrapperContent -Encoding UTF8
+                $sourcePath = $wrapperPath
+                break
+            }
+            '^(java|jvm)$' {
+                $kernelCacheDir = Join-Path $CacheDir (Join-Path "kernels" (Join-Path $kernelId $kernelVersion))
+                if (Test-Path $kernelCacheDir) { Remove-Item -LiteralPath $kernelCacheDir -Recurse -Force }
+                New-Item -ItemType Directory -Path $kernelCacheDir | Out-Null
+                $javaJar = Join-Path $kernelCacheDir ("lcod-run-$kernelVersion.jar")
+                Copy-Item -LiteralPath $assetPath -Destination $javaJar -Force
+                $sourcePath = $javaJar
+                break
+            }
         }
-        $sourcePath = $candidate.FullName
     }
 
     if (-not $sourcePath) {
         Write-ErrorMessage "Provide --path <binary> or --from-release."
+        if ($tempDir) { Remove-Item -Recurse -Force $tempDir }
         exit 1
     }
 
@@ -653,10 +945,12 @@ function Kernel-Install([string[]]$Args) {
         exit 1
     }
 
-    Ensure-State
-
-    $destination = Join-Path $BinDir $kernelId
     if ((Test-Path $destination) -and -not $force) {
+        if ($existingVersion -and $kernelVersion -and $existingVersion -eq $kernelVersion) {
+            Write-Info ("Kernel '{0}' already installed at {1} (version {2}). Nothing to do." -f $kernelId, $destination, $existingVersion)
+            if ($tempDir) { Remove-Item -Recurse -Force $tempDir }
+            return
+        }
         if ($tempDir) { Remove-Item -Recurse -Force $tempDir }
         Write-ErrorMessage ("Kernel '{0}' already installed at {1} (use --force to overwrite)." -f $kernelId, $destination)
         exit 1
