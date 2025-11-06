@@ -215,6 +215,50 @@ for asset in entry.get("assets", []):
 PY
 }
 
+resolve_runtime_home() {
+  if [[ -n "${LCOD_HOME:-}" && -d "${LCOD_HOME}" && -f "${LCOD_HOME}/manifest.jsonl" ]]; then
+    printf '%s\n' "${LCOD_HOME}"
+    return 0
+  fi
+
+  if [[ -n "${SPEC_REPO_PATH:-}" && -d "${SPEC_REPO_PATH}" && -f "${SPEC_REPO_PATH}/runtime/manifest.jsonl" ]]; then
+    printf '%s\n' "${SPEC_REPO_PATH}"
+    return 0
+  fi
+
+  local node_version
+  node_version=$(jq -r '.installedKernels[]? | select(.id == "node") | .version // empty' "${LCOD_CONFIG}" 2>/dev/null || true)
+  if [[ -n "${node_version}" ]]; then
+    local node_runtime="${LCOD_CACHE_DIR}/kernels/node/${node_version}/runtime"
+    if [[ -d "${node_runtime}" && -f "${node_runtime}/manifest.jsonl" ]]; then
+      printf '%s\n' "${node_runtime}"
+      return 0
+    fi
+  fi
+
+  local node_path
+  node_path=$(jq -r '.installedKernels[]? | select(.id == "node") | .path // empty' "${LCOD_CONFIG}" 2>/dev/null || true)
+  if [[ -n "${node_path}" && -f "${node_path}" ]]; then
+    local embedded_home
+    embedded_home=$(awk -F'=' '/^export LCOD_HOME=/{gsub(/"/,"",$2); print $2; exit}' "${node_path}")
+    if [[ -n "${embedded_home}" && -d "${embedded_home}" && -f "${embedded_home}/manifest.jsonl" ]]; then
+      printf '%s\n' "${embedded_home}"
+      return 0
+    fi
+  fi
+
+  if [[ -d "${LCOD_CACHE_DIR}/kernels/node" ]]; then
+    local fallback_runtime
+    fallback_runtime=$(find "${LCOD_CACHE_DIR}/kernels/node" -mindepth 2 -maxdepth 2 -type d -name runtime -print 2>/dev/null | head -n1)
+    if [[ -n "${fallback_runtime}" && -f "${fallback_runtime}/manifest.jsonl" ]]; then
+      printf '%s\n' "${fallback_runtime}"
+      return 0
+    fi
+  fi
+
+  return 1
+}
+
 maybe_auto_update_cli() {
   if [[ "${LCOD_DISABLE_AUTO_UPDATE:-}" == "1" ]]; then
     return
@@ -1104,6 +1148,20 @@ EOF
 
   local cmd
   local forward=()
+
+  if [[ -z "${LCOD_HOME:-}" ]]; then
+    local runtime_home=""
+    runtime_home=$(resolve_runtime_home 2>/dev/null || true)
+    if [[ -n "${runtime_home}" ]]; then
+      export LCOD_HOME="${runtime_home}"
+      if [[ -z "${SPEC_REPO_PATH:-}" ]]; then
+        export SPEC_REPO_PATH="${runtime_home}"
+      fi
+      if [[ -z "${LCOD_RESOLVER_PATH:-}" ]]; then
+        export LCOD_RESOLVER_PATH="${runtime_home}/resolver"
+      fi
+    fi
+  fi
 
   case "${kernel_path}" in
     *.jar)
