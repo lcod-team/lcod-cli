@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  cli-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Clone lcod-spec (manifest for tests)
+        run: git clone --depth 1 https://github.com/lcod-team/lcod-spec ../lcod-spec
+
+      - name: Build CLI bundle
+        run: ./scripts/build-bundle.sh
+
+      - name: Install latest rust kernel from release
+        env:
+          VERSION_URL: https://raw.githubusercontent.com/lcod-team/lcod-release/main/VERSION
+        run: |
+          version="$(curl -fsSL "${VERSION_URL}")"
+          if [[ -z "${version}" ]]; then
+            echo "::error::Unable to determine release version."
+            exit 1
+          fi
+          export LCOD_STATE_DIR="${HOME}/.lcod-ci"
+          export LCOD_BIN_DIR="${LCOD_STATE_DIR}/bin"
+          mkdir -p "${LCOD_BIN_DIR}"
+          ./scripts/lcod kernel install rs --from-release --version "${version}" --force
+
+      - name: Run projection smoke tests
+        env:
+          LCOD_TEST_KERNEL_PATH: "${HOME}/.lcod-ci/bin/rs"
+          LCOD_TEST_SPEC_PATH: "${{ github.workspace }}/../lcod-spec"
+        run: |
+          export LCOD_STATE_DIR="${HOME}/.lcod-ci"
+          export LCOD_BIN_DIR="${LCOD_STATE_DIR}/bin"
+          export LCOD_CACHE_DIR="${LCOD_STATE_DIR}/cache"
+          mkdir -p "${LCOD_CACHE_DIR}"
+          ./tests/run-all.sh
