@@ -71,9 +71,15 @@ export LCOD_AUTO_UPDATE_INTERVAL=31536000
 mkdir -p "${LCOD_BIN_DIR}" "${LCOD_CACHE_DIR}"
 
 if [[ -n "${SPEC_PATH}" ]]; then
-  export SPEC_REPO_PATH="${SPEC_PATH}"
-  export LCOD_HOME="${SPEC_PATH}"
-  export LCOD_RESOLVER_PATH="${SPEC_PATH}/resolver"
+  if [[ -z "${SPEC_REPO_PATH:-}" ]]; then
+    export SPEC_REPO_PATH="${SPEC_PATH}"
+  fi
+  if [[ -z "${LCOD_HOME:-}" ]]; then
+    export LCOD_HOME="${SPEC_PATH}"
+  fi
+  if [[ -z "${LCOD_RESOLVER_PATH:-}" ]]; then
+    export LCOD_RESOLVER_PATH="${SPEC_PATH}/resolver"
+  fi
 fi
 
 CONFIG_PATH="${STATE_DIR}/config.json"
@@ -104,6 +110,7 @@ with open(config_path, "w", encoding="utf-8") as fh:
     fh.write("\n")
 PY
 export CONFIG_PATH KERNEL_PATH
+export LCOD_CONFIG="${CONFIG_PATH}"
 
 stdout_file="$(mktemp)"
 stderr_file="$(mktemp)"
@@ -112,7 +119,13 @@ cleanup() {
   rm -rf "${STATE_DIR}"
   rm -f "${stdout_file}" "${stderr_file}"
 }
-trap cleanup EXIT
+if [[ "${LCOD_TEST_KEEP_TMP:-0}" != "1" ]]; then
+  trap cleanup EXIT
+else
+  echo "[debug] STATE_DIR=${STATE_DIR}" >&2
+  echo "[debug] STDOUT_FILE=${stdout_file}" >&2
+  echo "[debug] STDERR_FILE=${stderr_file}" >&2
+fi
 
 inline_arg='text={"success":true}'
 set +e
@@ -121,7 +134,10 @@ status=$?
 set -e
 
 if [[ "${status}" -ne 0 ]]; then
-  cat "${stderr_file}" >&2
+  echo "[stdout file: ${stdout_file}]" >&2
+  cat "${stdout_file}" >&2 || true
+  echo "[stderr file: ${stderr_file}]" >&2
+  cat "${stderr_file}" >&2 || true
   echo "[fail] ${LABEL}: lcod run exited with status ${status}." >&2
   exit "${status}"
 fi
